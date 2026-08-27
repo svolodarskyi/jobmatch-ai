@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from typing import Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException
+from postgrest.exceptions import APIError
 from supabase import Client
 
 from app.db import get_db
@@ -34,8 +35,18 @@ def _now_iso() -> str:
 
 
 def _check_job_exists(job_id: str, db: Client) -> None:
-    """Raise 404 if job_id is not found in the job table."""
-    result = db.table(_JOB_TABLE).select("id").eq("id", job_id).execute()
+    """Raise 404 if job_id is not found in the job table.
+
+    ``job.id`` is a Postgres ``uuid`` column. A malformed (non-UUID-shaped)
+    job_id makes PostgREST reject the query outright, which the Supabase
+    client surfaces as ``postgrest.exceptions.APIError`` rather than an
+    empty result set. Treat that the same as "not found" so callers get a
+    404 instead of an unhandled 500.
+    """
+    try:
+        result = db.table(_JOB_TABLE).select("id").eq("id", job_id).execute()
+    except APIError:
+        raise HTTPException(status_code=404, detail=f"Job {job_id!r} not found") from None
     if not result.data:
         raise HTTPException(status_code=404, detail=f"Job {job_id!r} not found")
 

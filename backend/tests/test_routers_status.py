@@ -3,7 +3,7 @@ PATCH /jobs/{id}/fits_me endpoints.
 
 All collaborators are mocked — no live network or database connections.
 
-Ten concrete test cases:
+Eleven concrete test cases:
   1. PATCH /jobs/{id}/status happy path: creates initial history entry
   2. PATCH /jobs/{id}/status with existing history: appends to history
   3. PATCH /jobs/{id}/status with invalid status value: returns 422
@@ -13,13 +13,15 @@ Ten concrete test cases:
   7. PATCH /jobs/{id}/fits_me sets it to true
   8. PATCH /jobs/{id}/fits_me sets it back to false
   9. PATCH /jobs/{id}/fits_me with unknown job_id: returns 404
-  10. PATCH /jobs/{id}/fits_me with invalid body: returns 422
+  10. PATCH /jobs/{id}/fits_me with a malformed (non-UUID) job_id: returns 404
+  11. PATCH /jobs/{id}/fits_me with invalid body: returns 422
 """
 
 from unittest.mock import MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
+from postgrest.exceptions import APIError
 
 from app.db import get_db
 from app.main import app
@@ -292,6 +294,30 @@ def test_patch_fits_me_unknown_job_id_returns_404():
 
     assert response.status_code == 404
     job_chain = mock_db.table("job")
+    job_chain.update.assert_not_called()
+
+
+def test_patch_fits_me_malformed_job_id_returns_404():
+    """PATCH /jobs/{id}/fits_me with a garbage, non-UUID-shaped job_id
+    returns 404, not 500.
+
+    job.id is a Postgres uuid column, so a malformed job_id makes
+    PostgREST reject the query outright; the Supabase client surfaces
+    that as postgrest.exceptions.APIError rather than an empty result
+    set. _check_job_exists must translate that into a 404 instead of
+    letting it bubble up as FastAPI's default unhandled-exception 500.
+    """
+    mock_db = _make_status_mock_db(job_rows=[JOB_ROW], status_rows=[])
+    job_chain = mock_db.table("job")
+    job_chain.execute.side_effect = APIError(
+        {"message": "invalid input syntax for type uuid", "code": "22P02"}
+    )
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    client = TestClient(app)
+    response = client.patch("/jobs/not-a-uuid/fits_me", json={"fits_me": True})
+
+    assert response.status_code == 404
     job_chain.update.assert_not_called()
 
 
