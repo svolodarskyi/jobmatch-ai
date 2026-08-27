@@ -31,7 +31,7 @@ def list_jobs(
     source: Literal["adzuna", "jooble"] | None = Query(default=None),
     status: str | None = Query(default=None),
     since: date | None = Query(default=None),  # noqa: B008
-    limit: int = Query(default=50, ge=1),
+    limit: int = Query(default=50, ge=0),
     offset: int = Query(default=0, ge=0),
     db: Client = Depends(get_db),  # noqa: B008
 ) -> JobsResponse:
