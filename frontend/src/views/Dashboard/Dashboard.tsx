@@ -5,6 +5,7 @@ import FiltersBar, {
   type Filters,
   DEFAULT_FILTERS,
 } from '../../components/FiltersBar/FiltersBar'
+import FetchButton from '../../components/FetchButton/FetchButton'
 
 const API_BASE = 'http://localhost:8000'
 
@@ -47,6 +48,7 @@ export default function Dashboard() {
   const [total, setTotal] = useState<number>(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [refreshTrigger, setRefreshTrigger] = useState(0)
 
   useEffect(() => {
     setLoading(true)
@@ -64,7 +66,7 @@ export default function Dashboard() {
         setError(err instanceof Error ? err.message : 'Failed to load jobs.')
       })
       .finally(() => setLoading(false))
-  }, [filters])
+  }, [filters, refreshTrigger])
 
   function handleStatusChange(id: string, newStatus: string, history: StatusHistoryEntry[]) {
     setJobs((prev) =>
@@ -86,7 +88,10 @@ export default function Dashboard() {
       {/* Main content */}
       <main className="flex-1 min-w-0">
         <div className="max-w-4xl mx-auto px-6 py-10">
-          <h1 className="text-lg font-semibold text-slate-100 mb-6">Job Matches</h1>
+          <div className="flex items-center justify-between mb-6">
+            <h1 className="text-lg font-semibold text-slate-100">Job Matches</h1>
+            <FetchButton onFetchComplete={() => setRefreshTrigger((n) => n + 1)} />
+          </div>
 
           {/* Error banner */}
           {error && (
