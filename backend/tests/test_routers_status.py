@@ -1,14 +1,19 @@
-"""Tests for PATCH /jobs/{id}/status and PATCH /jobs/{id}/notes endpoints.
+"""Tests for PATCH /jobs/{id}/status, PATCH /jobs/{id}/notes, and
+PATCH /jobs/{id}/fits_me endpoints.
 
 All collaborators are mocked — no live network or database connections.
 
-Six concrete test cases:
+Ten concrete test cases:
   1. PATCH /jobs/{id}/status happy path: creates initial history entry
   2. PATCH /jobs/{id}/status with existing history: appends to history
   3. PATCH /jobs/{id}/status with invalid status value: returns 422
   4. PATCH /jobs/{id}/status with unknown job_id: returns 404
   5. PATCH /jobs/{id}/notes happy path: returns correct shape
   6. PATCH /jobs/{id}/notes with unknown job_id: returns 404
+  7. PATCH /jobs/{id}/fits_me sets it to true
+  8. PATCH /jobs/{id}/fits_me sets it back to false
+  9. PATCH /jobs/{id}/fits_me with unknown job_id: returns 404
+  10. PATCH /jobs/{id}/fits_me with invalid body: returns 422
 """
 
 from unittest.mock import MagicMock
@@ -92,6 +97,7 @@ def _make_status_mock_db(
     job_chain.execute.return_value = job_execute
     job_chain.select.return_value = job_chain
     job_chain.eq.return_value = job_chain
+    job_chain.update.return_value = job_chain
 
     status_chain = MagicMock()
     # select returns a chain that yields status_rows on execute
@@ -238,3 +244,71 @@ def test_patch_notes_unknown_job_id_returns_404():
     # Verify no upsert was attempted on application_status
     status_chain = mock_db.table("application_status")
     status_chain.upsert.assert_not_called()
+
+
+def test_patch_fits_me_sets_true():
+    """PATCH /jobs/{id}/fits_me with {"fits_me": true} returns 200 and updates
+    the job table directly (not application_status)."""
+    mock_db = _make_status_mock_db(job_rows=[JOB_ROW], status_rows=[])
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    client = TestClient(app)
+    response = client.patch(f"/jobs/{KNOWN_JOB_ID}/fits_me", json={"fits_me": True})
+
+    assert response.status_code == 200
+    assert response.json() == {"job_id": KNOWN_JOB_ID, "fits_me": True}
+
+    job_chain = mock_db.table("job")
+    job_chain.update.assert_called_once_with({"fits_me": True})
+    # Never touches application_status for this endpoint
+    status_chain = mock_db.table("application_status")
+    status_chain.upsert.assert_not_called()
+
+
+def test_patch_fits_me_sets_false():
+    """PATCH /jobs/{id}/fits_me with {"fits_me": false} returns 200 and can
+    flip a previously-set flag back off."""
+    mock_db = _make_status_mock_db(job_rows=[JOB_ROW], status_rows=[])
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    client = TestClient(app)
+    response = client.patch(f"/jobs/{KNOWN_JOB_ID}/fits_me", json={"fits_me": False})
+
+    assert response.status_code == 200
+    assert response.json() == {"job_id": KNOWN_JOB_ID, "fits_me": False}
+
+    job_chain = mock_db.table("job")
+    job_chain.update.assert_called_once_with({"fits_me": False})
+
+
+def test_patch_fits_me_unknown_job_id_returns_404():
+    """PATCH /jobs/{id}/fits_me returns 404 when the job_id does not exist in
+    the job table; no update should be attempted."""
+    mock_db = _make_status_mock_db(job_rows=[], status_rows=[])
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    client = TestClient(app)
+    response = client.patch(f"/jobs/{UNKNOWN_JOB_ID}/fits_me", json={"fits_me": True})
+
+    assert response.status_code == 404
+    job_chain = mock_db.table("job")
+    job_chain.update.assert_not_called()
+
+
+def test_patch_fits_me_invalid_body_returns_422():
+    """PATCH /jobs/{id}/fits_me with a missing or non-boolean fits_me value
+    returns 422 rather than 500 or a silent coercion."""
+    mock_db = _make_status_mock_db(job_rows=[JOB_ROW], status_rows=[])
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    client = TestClient(app)
+
+    missing_body_response = client.patch(f"/jobs/{KNOWN_JOB_ID}/fits_me", json={})
+    assert missing_body_response.status_code == 422
+
+    # Pydantic v2 coerces some strings ("true"/"yes"/"1"...) to bool, so use a
+    # value with no valid bool coercion to exercise the non-boolean branch.
+    non_bool_response = client.patch(
+        f"/jobs/{KNOWN_JOB_ID}/fits_me", json={"fits_me": "banana"}
+    )
+    assert non_bool_response.status_code == 422

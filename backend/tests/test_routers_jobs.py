@@ -338,6 +338,7 @@ def _job_row(
     raw_score: float = 72.0,
     llm_score: float | None = None,
     llm_rationale: str | None = None,
+    fits_me: bool = False,
 ) -> dict:
     return {
         "id": id,
@@ -354,6 +355,7 @@ def _job_row(
         "llm_rationale": llm_rationale,
         "description": "Build great things.",
         "external_id": id,
+        "fits_me": fits_me,
     }
 
 
@@ -448,6 +450,7 @@ def test_get_jobs_correct_field_shape():
     assert j["llm_rationale"] == "Great match."
     assert j["status"] == "Saved"
     assert j["notes"] == "follow up"
+    assert j["fits_me"] is False
 
 
 def test_get_jobs_ordered_by_raw_score_desc():
@@ -702,3 +705,81 @@ def test_get_jobs_combined_filters():
     data = response.json()
     assert data["total"] == 1
     assert data["jobs"][0]["status"] == "Saved"
+
+
+def test_get_jobs_filter_fits_me_true():
+    """fits_me=true returns only jobs flagged as a fit."""
+    job_flagged = _job_row(id="aaaa0000-0000-0000-0000-000000000001", fits_me=True)
+
+    # DB-level filter — mock only returns the matching row, as the real query would.
+    mock_db = _make_jobs_mock_db([job_flagged])
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    client = TestClient(app)
+    response = client.get("/jobs/?fits_me=true")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 1
+    assert data["jobs"][0]["fits_me"] is True
+
+    job_chain = mock_db.table("job")
+    job_chain.eq.assert_called_once_with("fits_me", True)
+
+
+def test_get_jobs_filter_fits_me_false():
+    """fits_me=false returns only unflagged jobs."""
+    job_unflagged = _job_row(id="bbbb0000-0000-0000-0000-000000000002", fits_me=False)
+
+    mock_db = _make_jobs_mock_db([job_unflagged])
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    client = TestClient(app)
+    response = client.get("/jobs/?fits_me=false")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 1
+    assert data["jobs"][0]["fits_me"] is False
+
+    job_chain = mock_db.table("job")
+    job_chain.eq.assert_called_once_with("fits_me", False)
+
+
+def test_get_jobs_no_fits_me_param_returns_all_regardless_of_flag():
+    """Omitting fits_me returns every job regardless of the flag's value, and
+    does not apply an eq('fits_me', ...) filter at all."""
+    job_flagged = _job_row(id="aaaa0000-0000-0000-0000-000000000001", fits_me=True)
+    job_unflagged = _job_row(id="bbbb0000-0000-0000-0000-000000000002", fits_me=False)
+
+    mock_db = _make_jobs_mock_db([job_flagged, job_unflagged])
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    client = TestClient(app)
+    response = client.get("/jobs/")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 2
+    returned_flags = {j["id"]: j["fits_me"] for j in data["jobs"]}
+    assert returned_flags == {job_flagged["id"]: True, job_unflagged["id"]: False}
+
+    job_chain = mock_db.table("job")
+    job_chain.eq.assert_not_called()
+
+
+def test_get_jobs_fits_me_defaults_false_when_missing_from_row():
+    """If a job row lacks the fits_me column (e.g. migration not yet applied
+    in some environment), the router degrades to False instead of raising."""
+    job = _job_row()
+    del job["fits_me"]
+
+    mock_db = _make_jobs_mock_db([job])
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    client = TestClient(app)
+    response = client.get("/jobs/")
+
+    assert response.status_code == 200
+    j = response.json()["jobs"][0]
+    assert j["fits_me"] is False

@@ -40,6 +40,7 @@ class JobOut(BaseModel):
     llm_rationale: str | None
     status: str
     notes: str
+    fits_me: bool
 
 
 class JobsResponse(BaseModel):
@@ -88,6 +89,19 @@ class NotesUpdateResponse(BaseModel):
     job_id: str
     notes: str
     updated_at: str
+
+
+class FitsMeUpdateRequest(BaseModel):
+    """Request body for PATCH /jobs/{id}/fits_me."""
+
+    fits_me: bool
+
+
+class FitsMeUpdateResponse(BaseModel):
+    """Response body for PATCH /jobs/{id}/fits_me."""
+
+    job_id: str
+    fits_me: bool
 
 
 # ---------------------------------------------------------------------------

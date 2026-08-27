@@ -1,0 +1,11 @@
+-- backend/migrations/003_fits_me.sql
+-- Adds a `fits_me` boolean flag to the `job` table so the user can manually
+-- mark a job as a good personal fit, independent of the application_status
+-- tracking pipeline (PATCH /jobs/{id}/status, /notes).
+--
+-- Idempotent: ADD COLUMN IF NOT EXISTS is safe to re-run — running this file
+-- twice against the same database produces no error and does not reset any
+-- job's already-set fits_me value back to false. Every pre-existing row
+-- reads fits_me = false immediately after the column is added, since the
+-- DEFAULT applies retroactively to existing rows.
+ALTER TABLE job ADD COLUMN IF NOT EXISTS fits_me boolean NOT NULL DEFAULT false;

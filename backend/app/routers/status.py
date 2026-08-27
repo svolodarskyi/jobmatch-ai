@@ -8,6 +8,8 @@ from supabase import Client
 
 from app.db import get_db
 from app.models import (
+    FitsMeUpdateRequest,
+    FitsMeUpdateResponse,
     NotesUpdateRequest,
     NotesUpdateResponse,
     StatusHistoryEntry,
@@ -134,4 +136,34 @@ def update_notes(
         job_id=job_id,
         notes=body.notes,
         updated_at=now,
+    )
+
+
+@router.patch("/{job_id}/fits_me", response_model=FitsMeUpdateResponse)
+def update_fits_me(
+    job_id: str,
+    body: FitsMeUpdateRequest,
+    db: Client = Depends(get_db),  # noqa: B008
+) -> FitsMeUpdateResponse:
+    """Update the fits_me flag for a job.
+
+    Unlike ``status``/``notes`` (stored in the ``application_status`` table),
+    ``fits_me`` lives directly on the ``job`` row — this handler updates the
+    ``job`` table itself, not ``application_status``. It is a manual,
+    user-set annotation independent of the application-status tracking
+    pipeline.
+
+    Returns the updated fits_me value.
+
+    Raises:
+        404: The job_id does not exist in the job table.
+        422: The request body is missing fits_me or it is not a boolean.
+    """
+    _check_job_exists(job_id, db)
+
+    db.table(_JOB_TABLE).update({"fits_me": body.fits_me}).eq("id", job_id).execute()
+
+    return FitsMeUpdateResponse(
+        job_id=job_id,
+        fits_me=body.fits_me,
     )

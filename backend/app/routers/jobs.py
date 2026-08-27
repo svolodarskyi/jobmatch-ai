@@ -34,6 +34,7 @@ def list_jobs(
     source: Literal["adzuna", "jooble"] | None = Query(default=None),
     status: str | None = Query(default=None),
     since: date | None = Query(default=None),  # noqa: B008
+    fits_me: bool | None = Query(default=None),
     limit: int = Query(default=50, ge=0),
     offset: int = Query(default=0, ge=0),
     db: Client = Depends(get_db),  # noqa: B008
@@ -44,6 +45,9 @@ def list_jobs(
     - ``min_score``: only jobs with raw_score >= min_score
     - ``source``: only jobs from the given source
     - ``since``: only jobs fetched on or after the given date
+    - ``fits_me``: only jobs with the given fits_me flag; omitted means no
+      filtering on the flag (behavior unchanged from before this field
+      existed)
 
     Filters applied in Python (after merging application_status):
     - ``status``: filter by application status; "New" matches both explicit
@@ -63,6 +67,9 @@ def list_jobs(
 
     if since is not None:
         query = query.gte("date_fetched", since.isoformat())
+
+    if fits_me is not None:
+        query = query.eq("fits_me", fits_me)
 
     job_result = query.execute()
     job_rows: list[dict[str, Any]] = [_row_to_dict(r) for r in (job_result.data or [])]
@@ -137,6 +144,7 @@ def list_jobs(
             llm_rationale=j.get("llm_rationale"),
             status=j["status"],
             notes=j["notes"],
+            fits_me=j.get("fits_me", False),
         )
         for j in page
     ]
