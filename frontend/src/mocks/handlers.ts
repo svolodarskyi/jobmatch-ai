@@ -65,4 +65,28 @@ export const handlers = [
   http.post('http://localhost:8000/jobs/fetch', () => {
     return HttpResponse.json({ fetched: 48, new: 12, updated: 3, scored_pass1: 48, scored_pass2: 15 })
   }),
+
+  http.get('http://localhost:8000/fetch-runs', () => {
+    return HttpResponse.json({
+      runs: [
+        {
+          id: '1',
+          started_at: '2026-08-27T09:00:00Z',
+          completed_at: '2026-08-27T09:00:08Z',
+          window_days: 1,
+          fetched_total: 97,
+          new_jobs: 23,
+          updated_jobs: 4,
+          scored_pass1: 97,
+          scored_pass2: 20,
+          source_stats: { adzuna: { retrieved: 40 }, jooble: { retrieved: 57 } },
+          tokens_in: 7841,
+          tokens_out: 591,
+          cost_usd: 0.001531,
+          status: 'ok',
+          error_message: null,
+        },
+      ],
+    })
+  }),
 ]

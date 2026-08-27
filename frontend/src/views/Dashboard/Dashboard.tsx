@@ -6,6 +6,7 @@ import FiltersBar, {
   DEFAULT_FILTERS,
 } from '../../components/FiltersBar/FiltersBar'
 import FetchButton from '../../components/FetchButton/FetchButton'
+import FetchHistory from '../../components/FetchHistory/FetchHistory'
 
 const API_BASE = 'http://localhost:8000'
 
@@ -92,6 +93,8 @@ export default function Dashboard() {
             <h1 className="text-lg font-semibold text-slate-100">Job Matches</h1>
             <FetchButton onFetchComplete={() => setRefreshTrigger((n) => n + 1)} />
           </div>
+
+          <FetchHistory refreshTrigger={refreshTrigger} />
 
           {/* Error banner */}
           {error && (
