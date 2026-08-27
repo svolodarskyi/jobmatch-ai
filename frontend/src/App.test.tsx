@@ -1,7 +1,11 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import App from './App'
 
-test('renders the JobMatch AI heading', () => {
+test('renders the ProfileForm', async () => {
   render(<App />)
-  expect(screen.getByRole('heading', { name: /JobMatch AI/i })).toBeInTheDocument()
+  // ProfileForm shows a loading state, then the form
+  await waitFor(() => {
+    expect(screen.queryByText(/loading profile/i)).not.toBeInTheDocument()
+  })
+  expect(screen.getByRole('button', { name: /save profile/i })).toBeInTheDocument()
 })

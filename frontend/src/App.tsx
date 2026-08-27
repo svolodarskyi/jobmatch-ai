@@ -1,9 +1,7 @@
+import ProfileForm from './components/ProfileForm/ProfileForm'
+
 function App() {
-  return (
-    <main>
-      <h1>JobMatch AI</h1>
-    </main>
-  )
+  return <ProfileForm />
 }
 
 export default App
