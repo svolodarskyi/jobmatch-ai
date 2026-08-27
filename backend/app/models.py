@@ -1,6 +1,10 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel
+
+# Valid application status values
+ApplicationStatus = Literal["New", "Saved", "Applied", "Interviewing", "Rejected", "Offer"]
 
 
 class Profile(BaseModel):
@@ -43,3 +47,44 @@ class JobsResponse(BaseModel):
 
     total: int
     jobs: list[JobOut]
+
+
+# ---------------------------------------------------------------------------
+# Status endpoint models
+# ---------------------------------------------------------------------------
+
+
+class StatusHistoryEntry(BaseModel):
+    """A single entry in the application status history."""
+
+    status: str
+    changed_at: str
+
+
+class StatusUpdateRequest(BaseModel):
+    """Request body for PATCH /jobs/{id}/status."""
+
+    status: ApplicationStatus
+
+
+class StatusUpdateResponse(BaseModel):
+    """Response body for PATCH /jobs/{id}/status."""
+
+    job_id: str
+    status: str
+    history: list[StatusHistoryEntry]
+    updated_at: str
+
+
+class NotesUpdateRequest(BaseModel):
+    """Request body for PATCH /jobs/{id}/notes."""
+
+    notes: str
+
+
+class NotesUpdateResponse(BaseModel):
+    """Response body for PATCH /jobs/{id}/notes."""
+
+    job_id: str
+    notes: str
+    updated_at: str
