@@ -163,12 +163,26 @@ async def run(profile: Profile, db: Client) -> dict[str, object]:
     # ------------------------------------------------------------------
     # Step 3: Fetch from both sources in parallel for all target titles
     # ------------------------------------------------------------------
-    # Build coroutines for each source × title combination and gather
-    # them in two groups (adzuna / jooble) so both sources run concurrently.
+    source_errors: list[str] = []
+
+    async def _fetch_source(
+        coros: list, source_name: str
+    ) -> list[list[dict[str, object]]]:
+        """Run all per-title coroutines for one source; return empty on failure."""
+        try:
+            return list(await asyncio.gather(*coros))  # type: ignore[return-value]
+        except Exception as exc:
+            msg = f"{source_name} fetch failed: {exc}"
+            logger.warning(msg)
+            source_errors.append(msg)
+            return [[] for _ in coros]
+
     if titles:
         adzuna_batches, jooble_batches = await asyncio.gather(
-            asyncio.gather(*[adzuna.fetch_jobs(t, max_days_old) for t in titles]),
-            asyncio.gather(*[jooble.fetch_jobs(t) for t in titles]),
+            _fetch_source(
+                [adzuna.fetch_jobs(t, max_days_old) for t in titles], "Adzuna"
+            ),
+            _fetch_source([jooble.fetch_jobs(t) for t in titles], "Jooble"),
         )
     else:
         adzuna_batches = []
@@ -253,7 +267,7 @@ async def run(profile: Profile, db: Client) -> dict[str, object]:
     # ------------------------------------------------------------------
     cost_usd = round((tokens_in * 0.15 + tokens_out * 0.60) / 1_000_000, 6)
     any_pass2_failed = any(r.llm_score is None for r in ranked)
-    run_status = "partial" if any_pass2_failed else "ok"
+    run_status = "partial" if (any_pass2_failed or source_errors) else "ok"
 
     # Build per-source stats for the jsonb column.
     source_stats: dict[str, dict[str, int]] = {}
@@ -277,6 +291,7 @@ async def run(profile: Profile, db: Client) -> dict[str, object]:
                 "tokens_out": tokens_out,
                 "cost_usd": cost_usd,
                 "status": run_status,
+                "error_message": "; ".join(source_errors) if source_errors else None,
             }
         ).eq("id", run_id).execute()
 
