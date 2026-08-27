@@ -281,30 +281,17 @@ def test_pipeline_run_empty_titles_returns_zero_counts():
 
 
 def test_post_fetch_happy_path():
-    """POST /jobs/fetch returns 200 with fetched/new/scored summary."""
+    """POST /jobs/fetch returns 202 immediately; pipeline runs in the background."""
     mock_db = _make_mock_db([FIXED_PROFILE_ROW])
     app.dependency_overrides[get_db] = lambda: mock_db
 
-    job_a = _make_job("adzuna", "a1")
-    ranked_jobs = [_make_ranked_job(job_a)]
-    rerank_result = RerankResult(jobs=ranked_jobs, tokens_in=100, tokens_out=20)
-
-    with (
-        patch("app.pipeline.adzuna.fetch_jobs", new=AsyncMock(return_value=[{"id": "a1"}])),
-        patch("app.pipeline.jooble.fetch_jobs", new=AsyncMock(return_value=[])),
-        patch("app.pipeline.normalize_adzuna", return_value=job_a),
-        patch("app.pipeline.persist_jobs", return_value=_PERSIST_1),
-        patch("app.pipeline.pass1.score", return_value={"score": 72.0}),
-        patch("app.pipeline.pass2.rerank", return_value=rerank_result),
-    ):
+    # Patch the background runner so no real DB/network calls happen.
+    with patch("app.routers.jobs._run_pipeline_bg", new=AsyncMock(return_value=None)):
         client = TestClient(app)
         response = client.post("/jobs/fetch")
 
-    assert response.status_code == 200
-    data = response.json()
-    assert data["fetched"] == 1
-    assert data["new"] == 1
-    assert data["scored"] == 1
+    assert response.status_code == 202
+    assert response.json() == {"status": "started"}
 
 
 def test_post_fetch_no_profile_returns_404():
@@ -319,30 +306,17 @@ def test_post_fetch_no_profile_returns_404():
     assert "profile" in response.json()["detail"].lower()
 
 
-def test_post_fetch_pass2_failure_still_returns_200():
-    """POST /jobs/fetch returns 200 even when all Pass 2 LLM scores are None."""
-    mock_db = _make_mock_db([FIXED_PROFILE_ROW])
+def test_post_fetch_no_pipeline_on_missing_profile():
+    """POST /jobs/fetch returns 404 and does not enqueue a background task when profile is absent."""
+    mock_db = _make_mock_db([])
     app.dependency_overrides[get_db] = lambda: mock_db
 
-    job_a = _make_job("adzuna", "a1")
-    # All pass2 results have llm_score=None (failure fallback)
-    ranked_jobs = [_make_ranked_job(job_a, llm_score=None)]
-    rerank_result = RerankResult(jobs=ranked_jobs, tokens_in=0, tokens_out=0)
-
-    with (
-        patch("app.pipeline.adzuna.fetch_jobs", new=AsyncMock(return_value=[{"id": "a1"}])),
-        patch("app.pipeline.jooble.fetch_jobs", new=AsyncMock(return_value=[])),
-        patch("app.pipeline.normalize_adzuna", return_value=job_a),
-        patch("app.pipeline.persist_jobs", return_value=_PERSIST_1),
-        patch("app.pipeline.pass1.score", return_value={"score": 60.0}),
-        patch("app.pipeline.pass2.rerank", return_value=rerank_result),
-    ):
+    with patch("app.routers.jobs._run_pipeline_bg", new=AsyncMock()) as mock_bg:
         client = TestClient(app)
         response = client.post("/jobs/fetch")
 
-    assert response.status_code == 200
-    data = response.json()
-    assert data["scored"] == 1
+    assert response.status_code == 404
+    mock_bg.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

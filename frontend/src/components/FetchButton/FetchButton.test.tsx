@@ -1,9 +1,34 @@
+import { vi } from 'vitest'
 import { http, HttpResponse } from 'msw'
 import { server } from '../../mocks/server'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import FetchButton from './FetchButton'
-import Dashboard from '../../views/Dashboard/Dashboard'
+
+const POLL_MS = 50
+
+function completedRun(newJobs: number, status = 'ok', errorMessage: string | null = null) {
+  const now = new Date().toISOString()
+  return {
+    runs: [{
+      id: '1',
+      started_at: now,
+      completed_at: now,
+      window_days: 1,
+      fetched_total: newJobs,
+      new_jobs: newJobs,
+      updated_jobs: 0,
+      scored_pass1: newJobs,
+      scored_pass2: 0,
+      source_stats: { adzuna: { retrieved: newJobs }, jooble: { retrieved: 0 } },
+      tokens_in: 0,
+      tokens_out: 0,
+      cost_usd: 0,
+      status,
+      error_message: errorMessage,
+    }],
+  }
+}
 
 describe('FetchButton', () => {
   it('renders button with correct label', () => {
@@ -16,132 +41,107 @@ describe('FetchButton', () => {
     server.use(
       http.post('http://localhost:8000/jobs/fetch', () => {
         postCalled = true
-        return HttpResponse.json({ fetched: 1, new: 1, updated: 0, scored_pass1: 1, scored_pass2: 0 })
+        return HttpResponse.json({ status: 'started' }, { status: 202 })
       }),
     )
 
-    render(<FetchButton />)
+    render(<FetchButton pollInterval={POLL_MS} />)
     await userEvent.click(screen.getByRole('button', { name: /fetch new jobs/i }))
 
-    await waitFor(() => {
-      expect(postCalled).toBe(true)
-    })
+    await waitFor(() => expect(postCalled).toBe(true))
   })
 
-  it('shows spinner and "Fetching…" text while in-progress', async () => {
+  it('shows spinner and "Fetching…" text while polling', async () => {
     server.use(
-      http.post('http://localhost:8000/jobs/fetch', () => {
-        // never resolves — keeps loading state
-        return new Promise(() => {})
-      }),
+      http.post('http://localhost:8000/jobs/fetch', () =>
+        HttpResponse.json({ status: 'started' }, { status: 202 }),
+      ),
+      http.get('http://localhost:8000/fetch-runs', () =>
+        HttpResponse.json({ runs: [{ started_at: new Date().toISOString(), completed_at: null }] }),
+      ),
     )
 
-    render(<FetchButton />)
+    render(<FetchButton pollInterval={POLL_MS} />)
     await userEvent.click(screen.getByRole('button'))
-
     expect(await screen.findByText('Fetching…')).toBeInTheDocument()
   })
 
   it('button is disabled while fetching', async () => {
     server.use(
-      http.post('http://localhost:8000/jobs/fetch', () => {
-        return new Promise(() => {})
-      }),
+      http.post('http://localhost:8000/jobs/fetch', () =>
+        HttpResponse.json({ status: 'started' }, { status: 202 }),
+      ),
+      http.get('http://localhost:8000/fetch-runs', () =>
+        HttpResponse.json({ runs: [] }),
+      ),
     )
 
-    render(<FetchButton />)
+    render(<FetchButton pollInterval={POLL_MS} />)
     const btn = screen.getByRole('button')
     await userEvent.click(btn)
-
-    await waitFor(() => {
-      expect(btn).toBeDisabled()
-    })
+    await waitFor(() => expect(btn).toBeDisabled())
   })
 
-  it('shows success banner with correct count after completion', async () => {
+  it('shows success banner with correct count after polling completes', async () => {
     server.use(
-      http.post('http://localhost:8000/jobs/fetch', () => {
-        return HttpResponse.json({ fetched: 48, new: 12, updated: 3, scored_pass1: 48, scored_pass2: 15 })
-      }),
+      http.post('http://localhost:8000/jobs/fetch', () =>
+        HttpResponse.json({ status: 'started' }, { status: 202 }),
+      ),
+      http.get('http://localhost:8000/fetch-runs', () =>
+        HttpResponse.json(completedRun(12)),
+      ),
     )
 
-    render(<FetchButton />)
+    render(<FetchButton pollInterval={POLL_MS} />)
     await userEvent.click(screen.getByRole('button', { name: /fetch new jobs/i }))
 
     expect(await screen.findByText('12 new jobs found')).toBeInTheDocument()
   })
 
-  it('shows "No new jobs" when new=0', async () => {
+  it('shows "No new jobs" when new_jobs=0', async () => {
     server.use(
-      http.post('http://localhost:8000/jobs/fetch', () => {
-        return HttpResponse.json({ fetched: 10, new: 0, updated: 0, scored_pass1: 10, scored_pass2: 0 })
-      }),
+      http.post('http://localhost:8000/jobs/fetch', () =>
+        HttpResponse.json({ status: 'started' }, { status: 202 }),
+      ),
+      http.get('http://localhost:8000/fetch-runs', () =>
+        HttpResponse.json(completedRun(0)),
+      ),
     )
 
-    render(<FetchButton />)
+    render(<FetchButton pollInterval={POLL_MS} />)
     await userEvent.click(screen.getByRole('button', { name: /fetch new jobs/i }))
 
     expect(await screen.findByText('No new jobs')).toBeInTheDocument()
   })
 
-  it('shows error banner on API failure', async () => {
+  it('shows error banner on API failure (POST 4xx)', async () => {
     server.use(
-      http.post('http://localhost:8000/jobs/fetch', () => {
-        return HttpResponse.json({ detail: 'A fetch is already running.' }, { status: 503 })
-      }),
+      http.post('http://localhost:8000/jobs/fetch', () =>
+        HttpResponse.json({ detail: 'Profile not found' }, { status: 404 }),
+      ),
     )
 
-    render(<FetchButton />)
+    render(<FetchButton pollInterval={POLL_MS} />)
     await userEvent.click(screen.getByRole('button', { name: /fetch new jobs/i }))
 
-    expect(await screen.findByRole('alert')).toHaveTextContent('A fetch is already running.')
+    expect(await screen.findByRole('alert')).toHaveTextContent('Profile not found')
   })
 
-  it('job list refreshes after successful fetch (GET /jobs/ is called again)', async () => {
-    let jobsCallCount = 0
+  it('calls onFetchComplete callback after polling detects completion', async () => {
+    const onFetchComplete = vi.fn()
 
     server.use(
-      http.get('http://localhost:8000/jobs/', () => {
-        jobsCallCount++
-        return HttpResponse.json({
-          total: 1,
-          jobs: [
-            {
-              id: '1',
-              source: 'adzuna',
-              title: 'Data Engineer',
-              company: 'Acme',
-              location: 'Calgary, AB',
-              salary_min: 100000,
-              salary_max: 130000,
-              url: 'https://example.com',
-              date_fetched: '2026-08-26T14:00:00Z',
-              raw_score: 84,
-              llm_score: 78,
-              llm_rationale: 'Good match.',
-              status: 'New',
-              notes: '',
-            },
-          ],
-        })
-      }),
-      http.post('http://localhost:8000/jobs/fetch', () => {
-        return HttpResponse.json({ fetched: 1, new: 1, updated: 0, scored_pass1: 1, scored_pass2: 0 })
-      }),
+      http.post('http://localhost:8000/jobs/fetch', () =>
+        HttpResponse.json({ status: 'started' }, { status: 202 }),
+      ),
+      http.get('http://localhost:8000/fetch-runs', () =>
+        HttpResponse.json(completedRun(5)),
+      ),
     )
 
-    render(<Dashboard />)
-
-    // Wait for the initial job list load
-    await screen.findByText('Data Engineer')
-    expect(jobsCallCount).toBe(1)
-
-    // Click the fetch button
+    render(<FetchButton pollInterval={POLL_MS} onFetchComplete={onFetchComplete} />)
     await userEvent.click(screen.getByRole('button', { name: /fetch new jobs/i }))
 
-    // After fetch completes, GET /jobs/ should be called again
-    await waitFor(() => {
-      expect(jobsCallCount).toBe(2)
-    })
+    await waitFor(() => expect(onFetchComplete).toHaveBeenCalledOnce())
   })
 })

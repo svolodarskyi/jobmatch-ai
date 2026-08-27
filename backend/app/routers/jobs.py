@@ -1,14 +1,17 @@
 """Jobs router — exposes ``GET /jobs`` and ``POST /fetch``."""
 
+import logging
 from datetime import date
 from typing import Any, Literal, cast
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from supabase import Client
 
 from app import pipeline
-from app.db import get_db
+from app.db import get_client, get_db
 from app.models import JobOut, JobsResponse, Profile
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -141,25 +144,32 @@ def list_jobs(
     return JobsResponse(total=total, jobs=jobs_out)
 
 
-@router.post("/fetch")
-async def fetch_jobs(db: Client = Depends(get_db)) -> dict[str, object]:  # noqa: B008
-    """Trigger the full fetch → normalize → score → re-rank pipeline.
+async def _run_pipeline_bg(profile: Profile) -> None:
+    """Background task wrapper — gets its own DB client so it outlives the request."""
+    db = get_client()
+    try:
+        await pipeline.run(profile, db)
+    except Exception:
+        logger.exception("Background pipeline run failed")
 
-    Reads the stored profile from the database, then runs the pipeline which:
-    - Fetches listings from Adzuna and Jooble in parallel
-    - Normalizes and upserts results (dedup on source + external_id)
-    - Scores all jobs with Pass 1
-    - Re-ranks the top 20 with Pass 2 (OpenAI)
-    - Persists llm_score and llm_rationale back to the job table
+
+@router.post("/fetch", status_code=202)
+async def fetch_jobs(
+    background_tasks: BackgroundTasks,
+    db: Client = Depends(get_db),  # noqa: B008
+) -> dict[str, object]:
+    """Kick off the fetch pipeline as a background task and return immediately.
+
+    Reads the stored profile from the database, then enqueues the pipeline
+    which runs asynchronously after the response is sent.  Poll
+    ``GET /fetch-runs?limit=1`` to track progress.
 
     Returns:
-        A summary dict: ``{"fetched": N, "fetched_by_source": {"adzuna": N, "jooble": M},
-        "window_days": K, "new": M, "scored": K}``
+        ``{"status": "started"}`` with HTTP 202.
 
     Raises:
         404: No profile has been saved yet.
     """
-    # Load the profile — required for scoring
     result = db.table(_PROFILE_TABLE).select("*").execute()
     rows = result.data
     if not rows:
@@ -171,7 +181,5 @@ async def fetch_jobs(db: Client = Depends(get_db)) -> dict[str, object]:  # noqa
     row = _row_to_dict(rows[0])
     profile = Profile(**{k: v for k, v in row.items() if k != "id"})
 
-    # Run the full pipeline — Pass 2 failures are handled internally and
-    # will not cause a 500; the endpoint always returns a valid summary.
-    summary = await pipeline.run(profile, db)
-    return summary
+    background_tasks.add_task(_run_pipeline_bg, profile)
+    return {"status": "started"}

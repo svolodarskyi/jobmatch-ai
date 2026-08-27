@@ -166,12 +166,12 @@ async def run(profile: Profile, db: Client) -> dict[str, object]:
     source_errors: list[str] = []
 
     async def _fetch_source(
-        coros: list, source_name: str
+        coros: list[Any], source_name: str
     ) -> list[list[dict[str, object]]]:
         """Run all per-title coroutines for one source; return empty on failure."""
         try:
-            return list(await asyncio.gather(*coros))  # type: ignore[return-value]
-        except Exception as exc:
+            return list(await asyncio.gather(*coros))
+        except Exception as exc:  # noqa: BLE001
             msg = f"{source_name} fetch failed: {exc}"
             logger.warning(msg)
             source_errors.append(msg)
