@@ -82,13 +82,13 @@ export default function Dashboard() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-900 text-slate-100 font-[system-ui] flex flex-row">
+    <div className="flex-1 text-slate-100 font-[system-ui] flex flex-row">
       {/* Sidebar */}
       <FiltersBar filters={filters} onFilterChange={setFilters} />
 
       {/* Main content */}
       <main className="flex-1 min-w-0">
-        <div className="max-w-4xl mx-auto px-6 py-10">
+        <div className="px-6 py-10">
           <div className="flex items-center justify-between mb-6">
             <h1 className="text-lg font-semibold text-slate-100">Job Matches</h1>
             <FetchButton onFetchComplete={() => setRefreshTrigger((n) => n + 1)} />

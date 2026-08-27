@@ -246,15 +246,15 @@ export default function ProfileForm() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-slate-900 flex items-center justify-center text-slate-400 text-sm">
+      <div className="flex-1 flex items-center justify-center text-slate-400 text-sm">
         Loading profile…
       </div>
     )
   }
 
   return (
-    <div className="min-h-screen bg-slate-900 text-slate-100 font-[system-ui]">
-      <div className="max-w-7xl mx-auto px-6 py-10">
+    <div className="flex-1 text-slate-100 font-[system-ui]">
+      <div className="px-6 py-10">
         <h1 className="text-lg font-semibold text-slate-100 mb-6">
           Your Job Search Profile
         </h1>
