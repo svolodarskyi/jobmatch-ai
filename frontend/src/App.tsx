@@ -1,8 +1,9 @@
 import { useState } from 'react'
 import Dashboard from './views/Dashboard/Dashboard'
+import FetchRuns from './views/FetchRuns/FetchRuns'
 import ProfileForm from './components/ProfileForm/ProfileForm'
 
-type View = 'dashboard' | 'profile'
+type View = 'dashboard' | 'fetch-runs' | 'profile'
 
 export default function App() {
   const [view, setView] = useState<View>('dashboard')
@@ -31,8 +32,18 @@ export default function App() {
         >
           Profile
         </button>
+        <button
+          onClick={() => setView('fetch-runs')}
+          className={`text-sm px-3 py-1.5 rounded transition-colors ${
+            view === 'fetch-runs'
+              ? 'bg-blue-500 text-white'
+              : 'text-slate-400 hover:text-slate-100'
+          }`}
+        >
+          Fetch Runs
+        </button>
       </nav>
-      {view === 'dashboard' ? <Dashboard /> : <ProfileForm />}
+      {view === 'dashboard' ? <Dashboard /> : view === 'fetch-runs' ? <FetchRuns /> : <ProfileForm />}
     </div>
   )
 }

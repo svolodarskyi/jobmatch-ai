@@ -79,7 +79,7 @@ export const handlers = [
           updated_jobs: 4,
           scored_pass1: 97,
           scored_pass2: 20,
-          source_stats: { adzuna: { retrieved: 40 }, jooble: { retrieved: 57 } },
+          source_stats: { adzuna: { new: 40, updated: 4 }, jooble: { new: 57, updated: 3 } },
           tokens_in: 7841,
           tokens_out: 591,
           cost_usd: 0.001531,
