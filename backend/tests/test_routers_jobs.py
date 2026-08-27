@@ -326,3 +326,388 @@ def test_post_fetch_pass2_failure_still_returns_200():
     assert response.status_code == 200
     data = response.json()
     assert data["scored"] == 1
+
+
+# ---------------------------------------------------------------------------
+# GET /jobs endpoint tests
+# ---------------------------------------------------------------------------
+
+# Helpers ----------------------------------------------------------------
+
+def _job_row(
+    id: str = "aaaa0000-0000-0000-0000-000000000001",
+    source: str = "adzuna",
+    title: str = "Software Engineer",
+    company: str = "Acme Corp",
+    location: str = "Toronto, ON",
+    salary_min: int = 90_000,
+    salary_max: int = 120_000,
+    url: str = "https://example.com/1",
+    date_fetched: str = "2026-08-26T14:00:00+00:00",
+    raw_score: float = 72.0,
+    llm_score: float | None = None,
+    llm_rationale: str | None = None,
+) -> dict:
+    return {
+        "id": id,
+        "source": source,
+        "title": title,
+        "company": company,
+        "location": location,
+        "salary_min": salary_min,
+        "salary_max": salary_max,
+        "url": url,
+        "date_fetched": date_fetched,
+        "raw_score": raw_score,
+        "llm_score": llm_score,
+        "llm_rationale": llm_rationale,
+        "description": "Build great things.",
+        "external_id": id,
+    }
+
+
+def _status_row(
+    job_id: str,
+    status: str = "New",
+    notes: str = "",
+) -> dict:
+    return {
+        "id": f"ssss-{job_id}",
+        "job_id": job_id,
+        "status": status,
+        "notes": notes,
+        "history": [],
+        "updated_at": "2026-08-26T14:00:00+00:00",
+    }
+
+
+def _make_jobs_mock_db(job_rows: list[dict], status_rows: list[dict] | None = None) -> MagicMock:
+    """Mock Supabase client that returns job rows then status rows.
+
+    Supports chained calls:
+      db.table("job").select("*").gte(...).eq(...).execute()
+      db.table("application_status").select("*").in_(...).execute()
+    """
+    status_rows = status_rows or []
+
+    job_execute = MagicMock()
+    job_execute.data = job_rows
+
+    status_execute = MagicMock()
+    status_execute.data = status_rows
+
+    job_chain = MagicMock()
+    job_chain.execute.return_value = job_execute
+    job_chain.select.return_value = job_chain
+    job_chain.gte.return_value = job_chain
+    job_chain.eq.return_value = job_chain
+    job_chain.in_.return_value = job_chain
+
+    status_chain = MagicMock()
+    status_chain.execute.return_value = status_execute
+    status_chain.select.return_value = status_chain
+    status_chain.in_.return_value = status_chain
+
+    mock_db = MagicMock()
+
+    def _table_dispatch(name: str) -> MagicMock:
+        if name == "application_status":
+            return status_chain
+        return job_chain
+
+    mock_db.table.side_effect = _table_dispatch
+    return mock_db
+
+
+# Tests ------------------------------------------------------------------
+
+
+def test_get_jobs_returns_200_with_correct_shape():
+    """GET /jobs returns 200 with total and jobs list."""
+    job = _job_row()
+    mock_db = _make_jobs_mock_db([job])
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    client = TestClient(app)
+    response = client.get("/jobs/")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert "total" in data
+    assert "jobs" in data
+    assert data["total"] == 1
+    assert len(data["jobs"]) == 1
+
+
+def test_get_jobs_correct_field_shape():
+    """Response job objects include all required fields."""
+    job = _job_row(llm_score=85.0, llm_rationale="Great match.")
+    mock_db = _make_jobs_mock_db([job], [_status_row(job["id"], "Saved", "follow up")])
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    client = TestClient(app)
+    response = client.get("/jobs/")
+
+    j = response.json()["jobs"][0]
+    assert j["id"] == job["id"]
+    assert j["source"] == "adzuna"
+    assert j["title"] == "Software Engineer"
+    assert j["company"] == "Acme Corp"
+    assert j["llm_score"] == 85.0
+    assert j["llm_rationale"] == "Great match."
+    assert j["status"] == "Saved"
+    assert j["notes"] == "follow up"
+
+
+def test_get_jobs_ordered_by_raw_score_desc():
+    """Jobs are returned in raw_score descending order."""
+    job_low = _job_row(id="aaaa0000-0000-0000-0000-000000000001", raw_score=40.0)
+    job_high = _job_row(id="bbbb0000-0000-0000-0000-000000000002", raw_score=90.0)
+    job_mid = _job_row(id="cccc0000-0000-0000-0000-000000000003", raw_score=65.0)
+
+    mock_db = _make_jobs_mock_db([job_low, job_high, job_mid])
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    client = TestClient(app)
+    response = client.get("/jobs/")
+
+    scores = [j["raw_score"] for j in response.json()["jobs"]]
+    assert scores == [90.0, 65.0, 40.0]
+
+
+def test_get_jobs_deterministic_secondary_sort_by_id():
+    """Jobs with equal raw_score are sorted by id ascending."""
+    job_b = _job_row(id="bbbb0000-0000-0000-0000-000000000002", raw_score=75.0)
+    job_a = _job_row(id="aaaa0000-0000-0000-0000-000000000001", raw_score=75.0)
+    job_c = _job_row(id="cccc0000-0000-0000-0000-000000000003", raw_score=75.0)
+
+    mock_db = _make_jobs_mock_db([job_b, job_a, job_c])
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    client = TestClient(app)
+    response = client.get("/jobs/")
+
+    ids = [j["id"] for j in response.json()["jobs"]]
+    assert ids == [
+        "aaaa0000-0000-0000-0000-000000000001",
+        "bbbb0000-0000-0000-0000-000000000002",
+        "cccc0000-0000-0000-0000-000000000003",
+    ]
+
+
+def test_get_jobs_filter_min_score():
+    """min_score filters out jobs below the threshold."""
+    job_high = _job_row(id="bbbb0000-0000-0000-0000-000000000002", raw_score=80.0)
+
+    # DB-level filter is applied via gte; we simulate by only returning matching rows
+    mock_db = _make_jobs_mock_db([job_high])
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    client = TestClient(app)
+    response = client.get("/jobs/?min_score=50")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 1
+    # Verify the gte filter was applied with the correct value
+    job_chain = mock_db.table("job")
+    job_chain.gte.assert_called_once_with("raw_score", 50)
+
+
+def test_get_jobs_filter_source():
+    """source filter is passed to the DB query."""
+    job = _job_row(source="jooble")
+    mock_db = _make_jobs_mock_db([job])
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    client = TestClient(app)
+    response = client.get("/jobs/?source=jooble")
+
+    assert response.status_code == 200
+    job_chain = mock_db.table("job")
+    job_chain.eq.assert_called_once_with("source", "jooble")
+
+
+def test_get_jobs_invalid_source_returns_422():
+    """Passing an invalid source value returns 422."""
+    mock_db = _make_jobs_mock_db([])
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    client = TestClient(app)
+    response = client.get("/jobs/?source=linkedin")
+
+    assert response.status_code == 422
+
+
+def test_get_jobs_filter_since():
+    """since filter is passed to the DB query as ISO date."""
+    job = _job_row(date_fetched="2026-08-27T10:00:00+00:00")
+    mock_db = _make_jobs_mock_db([job])
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    client = TestClient(app)
+    response = client.get("/jobs/?since=2026-08-27")
+
+    assert response.status_code == 200
+    job_chain = mock_db.table("job")
+    job_chain.gte.assert_any_call("date_fetched", "2026-08-27")
+
+
+def test_get_jobs_filter_status_saved():
+    """status filter returns only jobs with that application status."""
+    job_new = _job_row(id="aaaa0000-0000-0000-0000-000000000001")
+    job_saved = _job_row(id="bbbb0000-0000-0000-0000-000000000002")
+
+    mock_db = _make_jobs_mock_db(
+        [job_new, job_saved],
+        [_status_row(job_saved["id"], "Saved")],
+    )
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    client = TestClient(app)
+    response = client.get("/jobs/?status=Saved")
+
+    data = response.json()
+    assert data["total"] == 1
+    assert data["jobs"][0]["id"] == job_saved["id"]
+    assert data["jobs"][0]["status"] == "Saved"
+
+
+def test_get_jobs_filter_status_new_includes_no_row_jobs():
+    """status=New matches both explicit 'New' rows and jobs with no application_status row."""
+    job_no_row = _job_row(id="aaaa0000-0000-0000-0000-000000000001", raw_score=80.0)
+    job_explicit_new = _job_row(id="bbbb0000-0000-0000-0000-000000000002", raw_score=70.0)
+    job_saved = _job_row(id="cccc0000-0000-0000-0000-000000000003", raw_score=60.0)
+
+    mock_db = _make_jobs_mock_db(
+        [job_no_row, job_explicit_new, job_saved],
+        [
+            _status_row(job_explicit_new["id"], "New"),
+            _status_row(job_saved["id"], "Saved"),
+        ],
+    )
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    client = TestClient(app)
+    response = client.get("/jobs/?status=New")
+
+    data = response.json()
+    assert data["total"] == 2
+    returned_ids = {j["id"] for j in data["jobs"]}
+    assert returned_ids == {job_no_row["id"], job_explicit_new["id"]}
+
+
+def test_get_jobs_default_status_and_notes_when_no_app_status_row():
+    """Jobs with no application_status row get status='New' and notes=''."""
+    job = _job_row()
+    mock_db = _make_jobs_mock_db([job], status_rows=[])
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    client = TestClient(app)
+    response = client.get("/jobs/")
+
+    j = response.json()["jobs"][0]
+    assert j["status"] == "New"
+    assert j["notes"] == ""
+
+
+def test_get_jobs_null_llm_fields():
+    """Jobs not yet re-ranked have null llm_score and llm_rationale."""
+    job = _job_row(llm_score=None, llm_rationale=None)
+    mock_db = _make_jobs_mock_db([job])
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    client = TestClient(app)
+    response = client.get("/jobs/")
+
+    j = response.json()["jobs"][0]
+    assert j["llm_score"] is None
+    assert j["llm_rationale"] is None
+
+
+def test_get_jobs_empty_result():
+    """When no jobs match, returns 200 with total=0 and empty list."""
+    mock_db = _make_jobs_mock_db([])
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    client = TestClient(app)
+    response = client.get("/jobs/")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 0
+    assert data["jobs"] == []
+
+
+def test_get_jobs_pagination_total_unaffected():
+    """total reflects all filtered results regardless of limit/offset."""
+    jobs = [
+        _job_row(id=f"aaaa0000-0000-0000-0000-{i:012d}", raw_score=float(100 - i))
+        for i in range(10)
+    ]
+    mock_db = _make_jobs_mock_db(jobs)
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    client = TestClient(app)
+    response = client.get("/jobs/?limit=3&offset=0")
+
+    data = response.json()
+    assert data["total"] == 10
+    assert len(data["jobs"]) == 3
+
+
+def test_get_jobs_pagination_offset():
+    """offset skips the appropriate number of results."""
+    jobs = [
+        _job_row(id=f"aaaa0000-0000-0000-0000-{i:012d}", raw_score=float(100 - i))
+        for i in range(5)
+    ]
+    mock_db = _make_jobs_mock_db(jobs)
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    client = TestClient(app)
+    response = client.get("/jobs/?limit=2&offset=2")
+
+    data = response.json()
+    assert data["total"] == 5
+    assert len(data["jobs"]) == 2
+    # After sorting by raw_score desc, offset=2 skips the first 2
+    assert data["jobs"][0]["raw_score"] == 98.0
+
+
+def test_get_jobs_offset_past_end_returns_empty_not_error():
+    """Requesting an offset beyond the total returns empty jobs list, not an error."""
+    job = _job_row()
+    mock_db = _make_jobs_mock_db([job])
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    client = TestClient(app)
+    response = client.get("/jobs/?offset=999")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 1
+    assert data["jobs"] == []
+
+
+def test_get_jobs_combined_filters():
+    """Multiple filters can be combined: source + min_score + status."""
+    job_match = _job_row(
+        id="aaaa0000-0000-0000-0000-000000000001",
+        source="adzuna",
+        raw_score=85.0,
+    )
+    # DB already filtered by source/min_score — only job_match returned
+    mock_db = _make_jobs_mock_db(
+        [job_match],
+        [_status_row(job_match["id"], "Saved")],
+    )
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    client = TestClient(app)
+    response = client.get("/jobs/?source=adzuna&min_score=80&status=Saved")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 1
+    assert data["jobs"][0]["status"] == "Saved"
