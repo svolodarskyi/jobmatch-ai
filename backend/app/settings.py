@@ -18,5 +18,8 @@ class Settings(BaseSettings):
     SUPABASE_URL: str
     SUPABASE_SERVICE_KEY: str
 
+    # Scheduler: how often to run the fetch pipeline (in hours)
+    FETCH_INTERVAL_HOURS: int = 24
+
 
 settings = Settings()

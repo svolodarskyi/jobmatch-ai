@@ -1,10 +1,25 @@
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 
 from app.routers import jobs as jobs_router
 from app.routers import profile as profile_router
+from app.scheduler import scheduler
 from app.settings import settings  # noqa: F401 — validates env vars on startup
 
-app = FastAPI()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    """Start the APScheduler on startup and shut it down cleanly on exit."""
+    scheduler.start()
+    try:
+        yield
+    finally:
+        scheduler.shutdown(wait=False)
+
+
+app = FastAPI(lifespan=lifespan)
 
 app.include_router(profile_router.router, prefix="/profile", tags=["profile"])
 app.include_router(jobs_router.router, prefix="/jobs", tags=["jobs"])
