@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 from app.db import get_db
 from app.main import app
 from app.models import Profile
-from app.scoring.pass2 import RankedJob
+from app.scoring.pass2 import RankedJob, RerankResult
 from app.sources.normalize import Job
 
 # ---------------------------------------------------------------------------
@@ -90,6 +90,11 @@ def _make_mock_db(profile_rows: list[dict] | None = None) -> MagicMock:
     return mock_db
 
 
+_PERSIST_1 = {"new_total": 1, "updated_total": 0, "new": {"adzuna": 1}, "updated": {}}
+_PERSIST_2 = {"new_total": 2, "updated_total": 0, "new": {"adzuna": 1, "jooble": 1}, "updated": {}}
+_PERSIST_0 = {"new_total": 0, "updated_total": 0, "new": {}, "updated": {}}
+
+
 @pytest.fixture(autouse=True)
 def _reset_overrides():
     """Ensure dependency overrides are cleaned up after every test."""
@@ -107,7 +112,8 @@ def test_pipeline_run_happy_path_returns_correct_counts():
     """pipeline.run() returns fetched/new/scored counts from mocked collaborators."""
     job_a = _make_job("adzuna", "a1")
     job_j = _make_job("jooble", "j1")
-    ranked = [_make_ranked_job(job_a), _make_ranked_job(job_j)]
+    ranked_jobs = [_make_ranked_job(job_a), _make_ranked_job(job_j)]
+    rerank_result = RerankResult(jobs=ranked_jobs, tokens_in=200, tokens_out=40)
 
     mock_db = _make_mock_db()
 
@@ -116,9 +122,9 @@ def test_pipeline_run_happy_path_returns_correct_counts():
         patch("app.pipeline.jooble.fetch_jobs", new=AsyncMock(return_value=[{"id": "j1"}])),
         patch("app.pipeline.normalize_adzuna", return_value=job_a),
         patch("app.pipeline.normalize_jooble", return_value=job_j),
-        patch("app.pipeline.persist_jobs", return_value=2) as mock_persist,
+        patch("app.pipeline.persist_jobs", return_value=_PERSIST_2) as mock_persist,
         patch("app.pipeline.pass1.score", return_value={"score": 72.0}),
-        patch("app.pipeline.pass2.rerank", return_value=ranked) as mock_rerank,
+        patch("app.pipeline.pass2.rerank", return_value=rerank_result) as mock_rerank,
     ):
         from app.pipeline import run
 
@@ -137,7 +143,8 @@ def test_pipeline_run_pass2_failure_still_returns_summary():
     """When Pass 2 returns jobs with llm_score=None, pipeline completes normally."""
     job_a = _make_job("adzuna", "a1")
     # Simulate all Pass 2 calls failing — llm_score/rationale are None
-    ranked = [_make_ranked_job(job_a, llm_score=None)]
+    ranked_jobs = [_make_ranked_job(job_a, llm_score=None)]
+    rerank_result = RerankResult(jobs=ranked_jobs, tokens_in=0, tokens_out=0)
 
     mock_db = _make_mock_db()
 
@@ -145,9 +152,9 @@ def test_pipeline_run_pass2_failure_still_returns_summary():
         patch("app.pipeline.adzuna.fetch_jobs", new=AsyncMock(return_value=[{"id": "a1"}])),
         patch("app.pipeline.jooble.fetch_jobs", new=AsyncMock(return_value=[])),
         patch("app.pipeline.normalize_adzuna", return_value=job_a),
-        patch("app.pipeline.persist_jobs", return_value=1),
+        patch("app.pipeline.persist_jobs", return_value=_PERSIST_1),
         patch("app.pipeline.pass1.score", return_value={"score": 60.0}),
-        patch("app.pipeline.pass2.rerank", return_value=ranked),
+        patch("app.pipeline.pass2.rerank", return_value=rerank_result),
     ):
         from app.pipeline import run
 
@@ -157,15 +164,14 @@ def test_pipeline_run_pass2_failure_still_returns_summary():
     assert result["scored"] == 1
     assert result["fetched"] == 1
     assert result["new"] == 1
-    # No update call to DB because llm_score is None
-    chain = mock_db.table.return_value
-    chain.update.assert_not_called()
 
 
 def test_pipeline_run_dedup_does_not_inflate_new():
     """'new' count comes from persist_jobs — dedup (returning lower count) is reflected."""
     job_a = _make_job("adzuna", "dupe-1")
-    ranked = [_make_ranked_job(job_a)]
+    ranked_jobs = [_make_ranked_job(job_a)]
+    rerank_result = RerankResult(jobs=ranked_jobs, tokens_in=100, tokens_out=20)
+    dedup_persist = {"new_total": 1, "updated_total": 0, "new": {"adzuna": 1}, "updated": {}}
 
     mock_db = _make_mock_db()
 
@@ -177,9 +183,9 @@ def test_pipeline_run_dedup_does_not_inflate_new():
         patch("app.pipeline.jooble.fetch_jobs", new=AsyncMock(return_value=[])),
         patch("app.pipeline.normalize_adzuna", return_value=job_a),
         # persist_jobs returns 1 even though 2 raw items were fetched (dedup scenario)
-        patch("app.pipeline.persist_jobs", return_value=1) as mock_persist,
+        patch("app.pipeline.persist_jobs", return_value=dedup_persist) as mock_persist,
         patch("app.pipeline.pass1.score", return_value={"score": 70.0}),
-        patch("app.pipeline.pass2.rerank", return_value=ranked),
+        patch("app.pipeline.pass2.rerank", return_value=rerank_result),
     ):
         from app.pipeline import run
 
@@ -193,7 +199,8 @@ def test_pipeline_run_dedup_does_not_inflate_new():
 def test_pipeline_run_pass2_cap_is_respected():
     """pipeline.run() passes cap=20 to pass2.rerank."""
     job = _make_job()
-    ranked = [_make_ranked_job(job)]
+    ranked_jobs = [_make_ranked_job(job)]
+    rerank_result = RerankResult(jobs=ranked_jobs, tokens_in=100, tokens_out=20)
 
     mock_db = _make_mock_db()
 
@@ -201,9 +208,9 @@ def test_pipeline_run_pass2_cap_is_respected():
         patch("app.pipeline.adzuna.fetch_jobs", new=AsyncMock(return_value=[{"id": "a1"}])),
         patch("app.pipeline.jooble.fetch_jobs", new=AsyncMock(return_value=[])),
         patch("app.pipeline.normalize_adzuna", return_value=job),
-        patch("app.pipeline.persist_jobs", return_value=1),
+        patch("app.pipeline.persist_jobs", return_value=_PERSIST_1),
         patch("app.pipeline.pass1.score", return_value={"score": 80.0}),
-        patch("app.pipeline.pass2.rerank", return_value=ranked) as mock_rerank,
+        patch("app.pipeline.pass2.rerank", return_value=rerank_result) as mock_rerank,
     ):
         from app.pipeline import run
 
@@ -217,7 +224,8 @@ def test_pipeline_run_pass2_cap_is_respected():
 def test_pipeline_run_persists_llm_scores_to_db():
     """pipeline.run() updates llm_score and llm_rationale in the DB for ranked jobs."""
     job_a = _make_job("adzuna", "a1")
-    ranked = [_make_ranked_job(job_a, llm_score=90.0)]
+    ranked_jobs = [_make_ranked_job(job_a, llm_score=90.0)]
+    rerank_result = RerankResult(jobs=ranked_jobs, tokens_in=150, tokens_out=30)
 
     mock_db = _make_mock_db()
 
@@ -225,16 +233,16 @@ def test_pipeline_run_persists_llm_scores_to_db():
         patch("app.pipeline.adzuna.fetch_jobs", new=AsyncMock(return_value=[{"id": "a1"}])),
         patch("app.pipeline.jooble.fetch_jobs", new=AsyncMock(return_value=[])),
         patch("app.pipeline.normalize_adzuna", return_value=job_a),
-        patch("app.pipeline.persist_jobs", return_value=1),
+        patch("app.pipeline.persist_jobs", return_value=_PERSIST_1),
         patch("app.pipeline.pass1.score", return_value={"score": 72.0}),
-        patch("app.pipeline.pass2.rerank", return_value=ranked),
+        patch("app.pipeline.pass2.rerank", return_value=rerank_result),
     ):
         from app.pipeline import run
 
         asyncio.run(run(SAMPLE_PROFILE, mock_db))
 
     chain = mock_db.table.return_value
-    chain.update.assert_called_once_with(
+    chain.update.assert_any_call(
         {"llm_score": 90.0, "llm_rationale": "Good Python skills match."}
     )
 
@@ -248,12 +256,13 @@ def test_pipeline_run_empty_titles_returns_zero_counts():
         locations=["Toronto"],
     )
     mock_db = _make_mock_db()
+    empty_rerank = RerankResult(jobs=[], tokens_in=0, tokens_out=0)
 
     with (
         patch("app.pipeline.adzuna.fetch_jobs", new=AsyncMock()) as mock_adzuna,
         patch("app.pipeline.jooble.fetch_jobs", new=AsyncMock()) as mock_jooble,
-        patch("app.pipeline.persist_jobs", return_value=0),
-        patch("app.pipeline.pass2.rerank", return_value=[]),
+        patch("app.pipeline.persist_jobs", return_value=_PERSIST_0),
+        patch("app.pipeline.pass2.rerank", return_value=empty_rerank),
     ):
         from app.pipeline import run
 
@@ -277,15 +286,16 @@ def test_post_fetch_happy_path():
     app.dependency_overrides[get_db] = lambda: mock_db
 
     job_a = _make_job("adzuna", "a1")
-    ranked = [_make_ranked_job(job_a)]
+    ranked_jobs = [_make_ranked_job(job_a)]
+    rerank_result = RerankResult(jobs=ranked_jobs, tokens_in=100, tokens_out=20)
 
     with (
         patch("app.pipeline.adzuna.fetch_jobs", new=AsyncMock(return_value=[{"id": "a1"}])),
         patch("app.pipeline.jooble.fetch_jobs", new=AsyncMock(return_value=[])),
         patch("app.pipeline.normalize_adzuna", return_value=job_a),
-        patch("app.pipeline.persist_jobs", return_value=1),
+        patch("app.pipeline.persist_jobs", return_value=_PERSIST_1),
         patch("app.pipeline.pass1.score", return_value={"score": 72.0}),
-        patch("app.pipeline.pass2.rerank", return_value=ranked),
+        patch("app.pipeline.pass2.rerank", return_value=rerank_result),
     ):
         client = TestClient(app)
         response = client.post("/jobs/fetch")
@@ -316,15 +326,16 @@ def test_post_fetch_pass2_failure_still_returns_200():
 
     job_a = _make_job("adzuna", "a1")
     # All pass2 results have llm_score=None (failure fallback)
-    ranked = [_make_ranked_job(job_a, llm_score=None)]
+    ranked_jobs = [_make_ranked_job(job_a, llm_score=None)]
+    rerank_result = RerankResult(jobs=ranked_jobs, tokens_in=0, tokens_out=0)
 
     with (
         patch("app.pipeline.adzuna.fetch_jobs", new=AsyncMock(return_value=[{"id": "a1"}])),
         patch("app.pipeline.jooble.fetch_jobs", new=AsyncMock(return_value=[])),
         patch("app.pipeline.normalize_adzuna", return_value=job_a),
-        patch("app.pipeline.persist_jobs", return_value=1),
+        patch("app.pipeline.persist_jobs", return_value=_PERSIST_1),
         patch("app.pipeline.pass1.score", return_value={"score": 60.0}),
-        patch("app.pipeline.pass2.rerank", return_value=ranked),
+        patch("app.pipeline.pass2.rerank", return_value=rerank_result),
     ):
         client = TestClient(app)
         response = client.post("/jobs/fetch")

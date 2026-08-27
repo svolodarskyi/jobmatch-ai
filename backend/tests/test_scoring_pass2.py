@@ -9,7 +9,7 @@ import json
 from unittest.mock import MagicMock, patch
 
 from app.models import Profile
-from app.scoring.pass2 import RankedJob, rerank
+from app.scoring.pass2 import RankedJob, RerankResult, rerank
 from app.sources.normalize import Job
 
 # ---------------------------------------------------------------------------
@@ -52,12 +52,19 @@ def _score_dict(score: float = 75.0) -> dict[str, float]:
     }
 
 
-def _make_mock_response(score: int = 85, rationale: str = "Good skills match") -> MagicMock:
+def _make_mock_response(
+    score: int = 85,
+    rationale: str = "Good skills match",
+    prompt_tokens: int = 100,
+    completion_tokens: int = 20,
+) -> MagicMock:
     """Build a mock object that mimics the openai ChatCompletion response shape."""
     mock_response = MagicMock()
     mock_response.choices[0].message.content = json.dumps(
         {"score": score, "rationale": rationale}
     )
+    mock_response.usage.prompt_tokens = prompt_tokens
+    mock_response.usage.completion_tokens = completion_tokens
     return mock_response
 
 
@@ -66,11 +73,14 @@ def _make_mock_response(score: int = 85, rationale: str = "Good skills match") -
 # ---------------------------------------------------------------------------
 
 def test_empty_input_returns_empty_list():
-    """rerank() with no jobs should return [] immediately without calling OpenAI."""
+    """rerank() with no jobs should return RerankResult with empty jobs immediately without calling OpenAI."""
     with patch("app.scoring.pass2.OpenAI") as mock_openai_cls:
         result = rerank([], _profile())
 
-    assert result == []
+    assert isinstance(result, RerankResult)
+    assert result.jobs == []
+    assert result.tokens_in == 0
+    assert result.tokens_out == 0
     mock_openai_cls.assert_not_called()
 
 
@@ -86,42 +96,50 @@ def test_happy_path_single_job():
     with patch("app.scoring.pass2.OpenAI") as mock_openai_cls:
         mock_client = mock_openai_cls.return_value
         mock_client.chat.completions.create.return_value = _make_mock_response(
-            score=85, rationale="Good skills match"
+            score=85, rationale="Good skills match", prompt_tokens=150, completion_tokens=25
         )
 
-        results = rerank(scored_jobs, _profile())
+        result = rerank(scored_jobs, _profile())
 
-    assert len(results) == 1
-    ranked = results[0]
+    assert isinstance(result, RerankResult)
+    assert len(result.jobs) == 1
+    ranked = result.jobs[0]
     assert isinstance(ranked, RankedJob)
     assert ranked.job is job
     assert ranked.pass1_score == 80.0
     assert ranked.llm_score == 85.0
     assert ranked.llm_rationale == "Good skills match"
+    # Token counts should be accumulated
+    assert result.tokens_in == 150
+    assert result.tokens_out == 25
 
 
 def test_happy_path_multiple_jobs():
-    """Multiple jobs: each gets its own llm_score and llm_rationale."""
+    """Multiple jobs: each gets its own llm_score and llm_rationale; tokens accumulate."""
     jobs_and_scores = [
         (_job("1", "Backend Engineer"), _score_dict(70.0)),
         (_job("2", "Python Developer"), _score_dict(60.0)),
     ]
     responses = [
-        _make_mock_response(score=72, rationale="Solid backend skills"),
-        _make_mock_response(score=65, rationale="Python experience matches"),
+        _make_mock_response(score=72, rationale="Solid backend skills", prompt_tokens=100, completion_tokens=20),
+        _make_mock_response(score=65, rationale="Python experience matches", prompt_tokens=110, completion_tokens=18),
     ]
 
     with patch("app.scoring.pass2.OpenAI") as mock_openai_cls:
         mock_client = mock_openai_cls.return_value
         mock_client.chat.completions.create.side_effect = responses
 
-        results = rerank(jobs_and_scores, _profile())
+        result = rerank(jobs_and_scores, _profile())
 
-    assert len(results) == 2
-    assert results[0].llm_score == 72.0
-    assert results[0].llm_rationale == "Solid backend skills"
-    assert results[1].llm_score == 65.0
-    assert results[1].llm_rationale == "Python experience matches"
+    assert isinstance(result, RerankResult)
+    assert len(result.jobs) == 2
+    assert result.jobs[0].llm_score == 72.0
+    assert result.jobs[0].llm_rationale == "Solid backend skills"
+    assert result.jobs[1].llm_score == 65.0
+    assert result.jobs[1].llm_rationale == "Python experience matches"
+    # Tokens from both calls should be accumulated
+    assert result.tokens_in == 210
+    assert result.tokens_out == 38
 
 
 # ---------------------------------------------------------------------------
@@ -147,9 +165,10 @@ def test_cap_enforcement_default_20():
         mock_client = mock_openai_cls.return_value
         mock_client.chat.completions.create.side_effect = mock_create
 
-        results = rerank(scored_jobs, _profile(), cap=20)
+        result = rerank(scored_jobs, _profile(), cap=20)
 
-    assert len(results) == 20
+    assert isinstance(result, RerankResult)
+    assert len(result.jobs) == 20
     assert call_count == 20
 
 
@@ -164,9 +183,10 @@ def test_cap_enforcement_custom_cap():
         mock_client = mock_openai_cls.return_value
         mock_client.chat.completions.create.return_value = _make_mock_response()
 
-        results = rerank(scored_jobs, _profile(), cap=5)
+        result = rerank(scored_jobs, _profile(), cap=5)
 
-    assert len(results) == 5
+    assert isinstance(result, RerankResult)
+    assert len(result.jobs) == 5
     assert mock_client.chat.completions.create.call_count == 5
 
 
@@ -184,10 +204,11 @@ def test_cap_selects_top_scorers():
         mock_client = mock_openai_cls.return_value
         mock_client.chat.completions.create.return_value = _make_mock_response()
 
-        results = rerank(scored_jobs, _profile(), cap=1)
+        result = rerank(scored_jobs, _profile(), cap=1)
 
-    assert len(results) == 1
-    assert results[0].job is high_job
+    assert isinstance(result, RerankResult)
+    assert len(result.jobs) == 1
+    assert result.jobs[0].job is high_job
 
 
 # ---------------------------------------------------------------------------
@@ -195,7 +216,7 @@ def test_cap_selects_top_scorers():
 # ---------------------------------------------------------------------------
 
 def test_rate_limit_error_graceful_fallback():
-    """openai.RateLimitError → job included with llm_score=None, no crash."""
+    """openai.RateLimitError → job included with llm_score=None, no crash; tokens_in/out are 0."""
     import openai
 
     job = _job("99", "DevOps Engineer")
@@ -213,14 +234,18 @@ def test_rate_limit_error_graceful_fallback():
         mock_client = mock_openai_cls.return_value
         mock_client.chat.completions.create.side_effect = rate_limit_error
 
-        results = rerank(scored_jobs, _profile())
+        result = rerank(scored_jobs, _profile())
 
-    assert len(results) == 1
-    ranked = results[0]
+    assert isinstance(result, RerankResult)
+    assert len(result.jobs) == 1
+    ranked = result.jobs[0]
     assert ranked.job is job
     assert ranked.pass1_score == 55.0
     assert ranked.llm_score is None
     assert ranked.llm_rationale is None
+    # Failed calls contribute 0 tokens
+    assert result.tokens_in == 0
+    assert result.tokens_out == 0
 
 
 # ---------------------------------------------------------------------------
@@ -228,7 +253,7 @@ def test_rate_limit_error_graceful_fallback():
 # ---------------------------------------------------------------------------
 
 def test_api_timeout_error_graceful_fallback():
-    """openai.APITimeoutError → job included with llm_score=None, no crash."""
+    """openai.APITimeoutError → job included with llm_score=None, no crash; tokens_in/out are 0."""
     import openai
 
     job = _job("77", "Data Engineer")
@@ -240,14 +265,17 @@ def test_api_timeout_error_graceful_fallback():
         mock_client = mock_openai_cls.return_value
         mock_client.chat.completions.create.side_effect = timeout_error
 
-        results = rerank(scored_jobs, _profile())
+        result = rerank(scored_jobs, _profile())
 
-    assert len(results) == 1
-    ranked = results[0]
+    assert isinstance(result, RerankResult)
+    assert len(result.jobs) == 1
+    ranked = result.jobs[0]
     assert ranked.job is job
     assert ranked.pass1_score == 62.0
     assert ranked.llm_score is None
     assert ranked.llm_rationale is None
+    assert result.tokens_in == 0
+    assert result.tokens_out == 0
 
 
 # ---------------------------------------------------------------------------
@@ -255,7 +283,7 @@ def test_api_timeout_error_graceful_fallback():
 # ---------------------------------------------------------------------------
 
 def test_generic_exception_graceful_fallback():
-    """Any unexpected exception → job included with llm_score=None, no crash."""
+    """Any unexpected exception → job included with llm_score=None, no crash; tokens are 0."""
     job = _job("55", "ML Engineer")
     scored_jobs = [(job, _score_dict(48.0))]
 
@@ -265,12 +293,15 @@ def test_generic_exception_graceful_fallback():
             "unexpected internal error"
         )
 
-        results = rerank(scored_jobs, _profile())
+        result = rerank(scored_jobs, _profile())
 
-    assert len(results) == 1
-    ranked = results[0]
+    assert isinstance(result, RerankResult)
+    assert len(result.jobs) == 1
+    ranked = result.jobs[0]
     assert ranked.llm_score is None
     assert ranked.llm_rationale is None
+    assert result.tokens_in == 0
+    assert result.tokens_out == 0
 
 
 # ---------------------------------------------------------------------------
@@ -278,7 +309,7 @@ def test_generic_exception_graceful_fallback():
 # ---------------------------------------------------------------------------
 
 def test_partial_failure_mixed_results():
-    """If one job's API call fails, other jobs still get their scores."""
+    """If one job's API call fails, other jobs still get their scores; only successful call tokens count."""
     job_good = _job("1", "Python Dev")
     job_bad = _job("2", "Java Dev")
 
@@ -291,7 +322,7 @@ def test_partial_failure_mixed_results():
         # Fail on the second call
         if side_effect.call_count == 0:
             side_effect.call_count += 1
-            return _make_mock_response(score=90, rationale="Great Python fit")
+            return _make_mock_response(score=90, rationale="Great Python fit", prompt_tokens=120, completion_tokens=22)
         raise RuntimeError("boom")
 
     side_effect.call_count = 0
@@ -300,15 +331,19 @@ def test_partial_failure_mixed_results():
         mock_client = mock_openai_cls.return_value
         mock_client.chat.completions.create.side_effect = side_effect
 
-        results = rerank(scored_jobs, _profile())
+        result = rerank(scored_jobs, _profile())
 
-    assert len(results) == 2
+    assert isinstance(result, RerankResult)
+    assert len(result.jobs) == 2
     # First job (higher score, processed first) succeeded
-    assert results[0].llm_score == 90.0
-    assert results[0].llm_rationale == "Great Python fit"
+    assert result.jobs[0].llm_score == 90.0
+    assert result.jobs[0].llm_rationale == "Great Python fit"
     # Second job failed gracefully
-    assert results[1].llm_score is None
-    assert results[1].llm_rationale is None
+    assert result.jobs[1].llm_score is None
+    assert result.jobs[1].llm_rationale is None
+    # Only the successful call's tokens are counted
+    assert result.tokens_in == 120
+    assert result.tokens_out == 22
 
 
 # ---------------------------------------------------------------------------
@@ -327,8 +362,9 @@ def test_malformed_json_response_graceful_fallback():
         mock_client = mock_openai_cls.return_value
         mock_client.chat.completions.create.return_value = bad_response
 
-        results = rerank(scored_jobs, _profile())
+        result = rerank(scored_jobs, _profile())
 
-    assert len(results) == 1
-    assert results[0].llm_score is None
-    assert results[0].llm_rationale is None
+    assert isinstance(result, RerankResult)
+    assert len(result.jobs) == 1
+    assert result.jobs[0].llm_score is None
+    assert result.jobs[0].llm_rationale is None

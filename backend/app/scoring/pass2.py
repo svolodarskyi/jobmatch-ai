@@ -57,6 +57,21 @@ class RankedJob:
     llm_rationale: str | None
 
 
+@dataclass
+class RerankResult:
+    """Result returned by :func:`rerank`, including token usage.
+
+    Attributes:
+        jobs:       Re-ranked job list (one per input job, up to ``cap``).
+        tokens_in:  Total ``prompt_tokens`` consumed across all OpenAI calls.
+        tokens_out: Total ``completion_tokens`` produced across all OpenAI calls.
+    """
+
+    jobs: list[RankedJob]
+    tokens_in: int
+    tokens_out: int
+
+
 def _build_user_message(job: Job, profile: Profile) -> str:
     """Render the user-turn prompt from a job and profile."""
     skills_str = ", ".join(profile.skills) if profile.skills else "not specified"
@@ -83,7 +98,7 @@ def rerank(
     profile: Profile,
     *,
     cap: int = 20,
-) -> list[RankedJob]:
+) -> RerankResult:
     """Re-rank the top Pass 1 jobs using the OpenAI chat completions API.
 
     Args:
@@ -95,18 +110,22 @@ def rerank(
                      20 (cost-control invariant from architecture spec).
 
     Returns:
-        A list of :class:`RankedJob` instances, one per input job (up to
-        ``cap``), sorted by Pass 1 score descending.  Jobs whose OpenAI call
-        failed will have ``llm_score=None`` and ``llm_rationale=None``.
+        A :class:`RerankResult` containing the ranked jobs list (one per input
+        job, up to ``cap``), sorted by Pass 1 score descending, plus
+        accumulated ``tokens_in`` and ``tokens_out`` from all OpenAI calls.
+        Jobs whose OpenAI call failed will have ``llm_score=None`` and
+        ``llm_rationale=None``; their token contribution is 0.
     """
     if not scored_jobs:
-        return []
+        return RerankResult(jobs=[], tokens_in=0, tokens_out=0)
 
     # Enforce cap — sort by pass1 score and take the best `cap` jobs.
     top = sorted(scored_jobs, key=lambda x: x[1]["score"], reverse=True)[:cap]
 
     client = OpenAI(api_key=settings.OPENAI_API_KEY)
     results: list[RankedJob] = []
+    total_tokens_in = 0
+    total_tokens_out = 0
 
     for job, score_dict in top:
         pass1_score = score_dict["score"]
@@ -121,6 +140,10 @@ def rerank(
                 temperature=0.0,
                 max_tokens=256,
             )
+            # Accumulate token usage from this call.
+            if response.usage is not None:
+                total_tokens_in += response.usage.prompt_tokens
+                total_tokens_out += response.usage.completion_tokens
             content = response.choices[0].message.content or ""
             parsed = json.loads(content)
             llm_score = float(parsed["score"])
@@ -149,4 +172,4 @@ def rerank(
                 )
             )
 
-    return results
+    return RerankResult(jobs=results, tokens_in=total_tokens_in, tokens_out=total_tokens_out)
