@@ -88,3 +88,30 @@ class NotesUpdateResponse(BaseModel):
     job_id: str
     notes: str
     updated_at: str
+
+
+# ---------------------------------------------------------------------------
+# Fetch runs endpoint models
+# ---------------------------------------------------------------------------
+
+
+class FetchRunOut(BaseModel):
+    id: str
+    started_at: str | None = None
+    completed_at: str | None = None
+    window_days: int | None = None
+    fetched_total: int | None = None
+    new_jobs: int | None = None
+    updated_jobs: int | None = None
+    scored_pass1: int | None = None
+    scored_pass2: int | None = None
+    source_stats: dict[str, object] = {}
+    tokens_in: int | None = None
+    tokens_out: int | None = None
+    cost_usd: float | None = None
+    status: str = "ok"
+    error_message: str | None = None
+
+
+class FetchRunsResponse(BaseModel):
+    runs: list[FetchRunOut]
