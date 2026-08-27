@@ -1,0 +1,16 @@
+{
+  "results": [
+    {
+      "id": "adzuna-123",
+      "title": "Senior Data Engineer",
+      "company": {"display_name": "Acme Corp"},
+      "location": {"display_name": "Toronto, ON"},
+      "salary_min": 90000,
+      "salary_max": 130000,
+      "description": "We are looking for a Senior Data Engineer...",
+      "redirect_url": "https://www.adzuna.ca/jobs/details/123"
+    }
+  ],
+  "__CLASS__": "AdzunaPublicAPIJobSearchResults",
+  "count": 1
+}
