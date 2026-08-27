@@ -20,6 +20,7 @@ export const handlers = [
           llm_rationale: 'Good match.',
           status: 'New',
           notes: '',
+          fits_me: false,
         },
       ],
     })
@@ -50,6 +51,14 @@ export const handlers = [
       status: body.status,
       history: [{ status: body.status, changed_at: new Date().toISOString() }],
       updated_at: new Date().toISOString(),
+    })
+  }),
+
+  http.patch('http://localhost:8000/jobs/:id/fits_me', async ({ request, params }) => {
+    const body = (await request.json()) as { fits_me: boolean }
+    return HttpResponse.json({
+      job_id: params.id,
+      fits_me: body.fits_me,
     })
   }),
 

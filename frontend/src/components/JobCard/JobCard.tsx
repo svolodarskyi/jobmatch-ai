@@ -1,6 +1,8 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import StatusDropdown, { type StatusHistoryEntry } from '../StatusDropdown/StatusDropdown'
 import NotesPanel from '../NotesPanel/NotesPanel'
+
+const API_BASE = 'http://localhost:8000'
 
 export interface Job {
   id: string
@@ -12,19 +14,32 @@ export interface Job {
   salary_max: number | null
   url: string
   date_fetched: string
-  raw_score: number
+  raw_score: number | null
   llm_score: number | null
   llm_rationale: string | null
   status: string
   notes: string
   status_history?: StatusHistoryEntry[]
+  fits_me: boolean
 }
 
 // ── Score Ring ───────────────────────────────────────────────────────────────
 
-function ScoreRing({ score }: { score: number }) {
+function ScoreRing({ score }: { score: number | null }) {
   const radius = 16
   const circumference = 2 * Math.PI * radius
+
+  if (score === null) {
+    return (
+      <svg width="40" height="40" viewBox="0 0 40 40" aria-label="Score unavailable">
+        <circle cx="20" cy="20" r={radius} fill="none" stroke="#334155" strokeWidth="4" />
+        <text x="20" y="24" textAnchor="middle" fill="#94a3b8" fontSize="10" fontFamily="monospace">
+          —
+        </text>
+      </svg>
+    )
+  }
+
   const offset = circumference - (score / 100) * circumference
   const color =
     score >= 80
@@ -128,15 +143,36 @@ export interface JobCardProps {
   job: Job
   onStatusChange?: (id: string, newStatus: string, history: StatusHistoryEntry[]) => void
   onNotesChange?: (id: string, notes: string) => void
+  onSave?: (id: string) => void
+  onFitsMeToggle?: (id: string, next: boolean) => void
 }
 
-export default function JobCard({ job, onStatusChange, onNotesChange }: JobCardProps) {
+export default function JobCard({
+  job,
+  onStatusChange,
+  onNotesChange,
+  onSave,
+  onFitsMeToggle,
+}: JobCardProps) {
   const score = job.llm_score ?? job.raw_score
-  const statusStyle = STATUS_STYLES[job.status] ?? { bg: '#334155', text: '#cbd5e1' }
   const salary = formatSalary(job.salary_min, job.salary_max)
 
   const [dropdownOpen, setDropdownOpen] = useState(false)
   const [notesOpen, setNotesOpen] = useState(false)
+
+  // Save button has no way to tell the parent "revert to X" (its callback is
+  // `(id: string) => void`, unlike onStatusChange/onFitsMeToggle which carry
+  // the target value). So a failed Save reverts the *displayed* status here,
+  // locally, rather than round-tripping through parent state like the status
+  // dropdown does. Any legitimate status change coming back down through the
+  // `job` prop (dropdown, or a later successful sync) takes priority.
+  const [statusOverride, setStatusOverride] = useState<string | null>(null)
+  useEffect(() => {
+    setStatusOverride(null)
+  }, [job.status])
+
+  const displayedStatus = statusOverride ?? job.status
+  const statusStyle = STATUS_STYLES[displayedStatus] ?? { bg: '#334155', text: '#cbd5e1' }
 
   function handleStatusChange(newStatus: string, history: StatusHistoryEntry[]) {
     onStatusChange?.(job.id, newStatus, history)
@@ -144,6 +180,41 @@ export default function JobCard({ job, onStatusChange, onNotesChange }: JobCardP
 
   function handleNotesSaved(notes: string) {
     onNotesChange?.(job.id, notes)
+  }
+
+  async function handleSaveClick() {
+    if (displayedStatus === 'Saved') return // already saved — no-op, use the dropdown to un-save
+
+    const previousStatus = displayedStatus
+    onSave?.(job.id)
+
+    try {
+      const res = await fetch(`${API_BASE}/jobs/${job.id}/status`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'Saved' }),
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    } catch {
+      setStatusOverride(previousStatus)
+    }
+  }
+
+  async function handleFitsMeClick() {
+    const previous = job.fits_me
+    const next = !previous
+    onFitsMeToggle?.(job.id, next)
+
+    try {
+      const res = await fetch(`${API_BASE}/jobs/${job.id}/fits_me`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fits_me: next }),
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    } catch {
+      onFitsMeToggle?.(job.id, previous)
+    }
   }
 
   return (
@@ -195,13 +266,13 @@ export default function JobCard({ job, onStatusChange, onNotesChange }: JobCardP
               style={{ backgroundColor: statusStyle.bg, color: statusStyle.text }}
               data-testid="status-badge"
             >
-              {job.status}
+              {displayedStatus}
             </button>
 
             {dropdownOpen && (
               <StatusDropdown
                 jobId={job.id}
-                currentStatus={job.status}
+                currentStatus={displayedStatus}
                 history={job.status_history ?? []}
                 onClose={() => setDropdownOpen(false)}
                 onStatusChange={handleStatusChange}
@@ -217,6 +288,37 @@ export default function JobCard({ job, onStatusChange, onNotesChange }: JobCardP
           >
             View listing
           </a>
+
+          {onSave && (
+            <button
+              onClick={handleSaveClick}
+              aria-pressed={displayedStatus === 'Saved'}
+              data-testid="save-button"
+              className={
+                displayedStatus === 'Saved'
+                  ? 'text-xs rounded px-2 py-0.5 font-medium bg-blue-500 text-white transition-colors'
+                  : 'text-xs rounded px-2 py-0.5 font-medium border border-blue-500 text-blue-400 hover:bg-blue-500/10 transition-colors'
+              }
+            >
+              Save
+            </button>
+          )}
+
+          {onFitsMeToggle && (
+            <button
+              onClick={handleFitsMeClick}
+              aria-pressed={job.fits_me}
+              aria-label={job.fits_me ? 'Remove from Fits Me' : 'Mark as Fits Me'}
+              data-testid="fits-me-button"
+              className={
+                job.fits_me
+                  ? 'text-base leading-none text-blue-500 hover:text-blue-400 transition-colors'
+                  : 'text-base leading-none text-slate-400 hover:text-blue-400 transition-colors'
+              }
+            >
+              {job.fits_me ? '★' : '☆'}
+            </button>
+          )}
 
           <button
             onClick={() => setNotesOpen(true)}
