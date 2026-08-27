@@ -1,7 +1,7 @@
-import ProfileForm from './components/ProfileForm/ProfileForm'
+import Dashboard from './views/Dashboard/Dashboard'
 
 function App() {
-  return <ProfileForm />
+  return <Dashboard />
 }
 
 export default App
