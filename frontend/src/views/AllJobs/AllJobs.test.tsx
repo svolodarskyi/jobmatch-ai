@@ -250,6 +250,79 @@ describe('AllJobs', () => {
     expect(badge).toHaveTextContent('Saved')
   })
 
+  it('Fits Me filter toggle narrows the list client-side without a second network call, and restores on toggle off', async () => {
+    let requestCount = 0
+    const fitsMeJobs = [
+      job({ id: '1', title: 'Data Engineer', source: 'adzuna', fits_me: true }),
+      job({ id: '2', title: 'ML Engineer', source: 'jooble', fits_me: false }),
+    ]
+    server.use(
+      http.get('http://localhost:8000/jobs/', () => {
+        requestCount += 1
+        return HttpResponse.json({ total: 2, jobs: fitsMeJobs })
+      }),
+    )
+    const user = userEvent.setup()
+    render(<AllJobs />)
+
+    await screen.findByText('Data Engineer')
+    expect(screen.getByText('ML Engineer')).toBeInTheDocument()
+    expect(requestCount).toBe(1)
+
+    const fitsMeButton = screen.getByTestId('fits-me-filter-button')
+    expect(fitsMeButton).toHaveAttribute('aria-pressed', 'false')
+
+    await user.click(fitsMeButton)
+    expect(fitsMeButton).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByText('Data Engineer')).toBeInTheDocument()
+    expect(screen.queryByText('ML Engineer')).not.toBeInTheDocument()
+    expect(requestCount).toBe(1)
+
+    await user.click(fitsMeButton)
+    expect(fitsMeButton).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.getByText('Data Engineer')).toBeInTheDocument()
+    expect(screen.getByText('ML Engineer')).toBeInTheDocument()
+    expect(requestCount).toBe(1)
+  })
+
+  it('Fits Me filter combines with an existing filter (Fits Me + Adzuna) to the intersection', async () => {
+    const combinedJobs = [
+      job({ id: '1', title: 'Adzuna Fits', source: 'adzuna', fits_me: true }),
+      job({ id: '2', title: 'Adzuna No Fits', source: 'adzuna', fits_me: false }),
+      job({ id: '3', title: 'Jooble Fits', source: 'jooble', fits_me: true }),
+    ]
+    mockJobsList(combinedJobs)
+    const user = userEvent.setup()
+    render(<AllJobs />)
+
+    await screen.findByText('Adzuna Fits')
+
+    await user.click(screen.getByRole('button', { name: 'Adzuna' }))
+    await user.click(screen.getByTestId('fits-me-filter-button'))
+
+    expect(screen.getByText('Adzuna Fits')).toBeInTheDocument()
+    expect(screen.queryByText('Adzuna No Fits')).not.toBeInTheDocument()
+    expect(screen.queryByText('Jooble Fits')).not.toBeInTheDocument()
+  })
+
+  it('shows the no-matches empty state with a working Reset when Fits Me alone excludes everything', async () => {
+    mockJobsList(mixedJobs) // neither job has fits_me: true
+    const user = userEvent.setup()
+    render(<AllJobs />)
+
+    await screen.findByText('Data Engineer')
+    await user.click(screen.getByTestId('fits-me-filter-button'))
+
+    expect(await screen.findByText('No jobs match your filters.')).toBeInTheDocument()
+    const resetButton = screen.getByRole('button', { name: /reset filters/i })
+    expect(resetButton).toBeInTheDocument()
+
+    await user.click(resetButton)
+    expect(await screen.findByText('Data Engineer')).toBeInTheDocument()
+    expect(screen.getByText('ML Engineer')).toBeInTheDocument()
+    expect(screen.getByTestId('fits-me-filter-button')).toHaveAttribute('aria-pressed', 'false')
+  })
+
   it('Fits Me star fires the fits_me PATCH and reverts on a mocked failure', async () => {
     mockJobsList([mixedJobs[0]])
     server.use(

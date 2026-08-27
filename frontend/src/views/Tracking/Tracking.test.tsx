@@ -296,6 +296,96 @@ describe('Tracking', () => {
     )
   })
 
+  it('Fits Me filter narrows the active tab to fits_me jobs only, no second network call, and restores on toggle off', async () => {
+    let requestCount = 0
+    const fitsMeJobs = [
+      job({ id: '1', title: 'Saved Fits', status: 'Saved', fits_me: true }),
+      job({ id: '2', title: 'Saved No Fits', status: 'Saved', fits_me: false }),
+    ]
+    server.use(
+      http.get('http://localhost:8000/jobs/', () => {
+        requestCount += 1
+        return HttpResponse.json({ total: fitsMeJobs.length, jobs: fitsMeJobs })
+      }),
+    )
+    const user = userEvent.setup()
+    render(<Tracking />)
+
+    await screen.findByText('Saved Fits')
+    expect(screen.getByText('Saved No Fits')).toBeInTheDocument()
+    expect(requestCount).toBe(1)
+
+    const fitsMeButton = screen.getByTestId('fits-me-filter-button')
+    expect(fitsMeButton).toHaveAttribute('aria-pressed', 'false')
+
+    await user.click(fitsMeButton)
+    expect(fitsMeButton).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByText('Saved Fits')).toBeInTheDocument()
+    expect(screen.queryByText('Saved No Fits')).not.toBeInTheDocument()
+    expect(requestCount).toBe(1)
+
+    await user.click(fitsMeButton)
+    expect(fitsMeButton).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.getByText('Saved Fits')).toBeInTheDocument()
+    expect(screen.getByText('Saved No Fits')).toBeInTheDocument()
+    expect(requestCount).toBe(1)
+  })
+
+  it('Fits Me filter combines with a non-All tab (Fits Me + Applied) to the intersection', async () => {
+    const combinedJobs = [
+      job({ id: '1', title: 'Applied Fits', status: 'Applied', fits_me: true }),
+      job({ id: '2', title: 'Applied No Fits', status: 'Applied', fits_me: false }),
+      job({ id: '3', title: 'Saved Fits', status: 'Saved', fits_me: true }),
+    ]
+    mockJobsList(combinedJobs)
+    const user = userEvent.setup()
+    render(<Tracking />)
+
+    await screen.findByText('Applied Fits')
+
+    await user.click(within(tabGroup()).getByRole('button', { name: 'Applied' }))
+    await user.click(screen.getByTestId('fits-me-filter-button'))
+
+    expect(screen.getByText('Applied Fits')).toBeInTheDocument()
+    expect(screen.queryByText('Applied No Fits')).not.toBeInTheDocument()
+    expect(screen.queryByText('Saved Fits')).not.toBeInTheDocument()
+  })
+
+  it('shows a new empty state with a working Reset (tab has jobs but none are Fits Me), leaving the tab selection untouched', async () => {
+    mockJobsList([job({ id: '1', title: 'Saved Job', status: 'Saved', fits_me: false })])
+    const user = userEvent.setup()
+    render(<Tracking />)
+
+    await screen.findByText('Saved Job')
+    await user.click(within(tabGroup()).getByRole('button', { name: 'Saved' }))
+    await user.click(screen.getByTestId('fits-me-filter-button'))
+
+    expect(await screen.findByText('No jobs match your filters.')).toBeInTheDocument()
+    const resetButton = screen.getByRole('button', { name: /reset filters/i })
+    expect(resetButton).toBeInTheDocument()
+
+    await user.click(resetButton)
+    expect(await screen.findByText('Saved Job')).toBeInTheDocument()
+    expect(screen.getByTestId('fits-me-filter-button')).toHaveAttribute('aria-pressed', 'false')
+    // Tab selection is untouched by the reset.
+    expect(within(tabGroup()).getByRole('button', { name: 'Saved' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
+  })
+
+  it('existing tab-only empty state still has no reset link when Fits Me is off', async () => {
+    mockJobsList([job({ id: '1', title: 'Saved Job', status: 'Saved' })])
+    const user = userEvent.setup()
+    render(<Tracking />)
+
+    await screen.findByText('Saved Job')
+    await user.click(within(tabGroup()).getByRole('button', { name: 'Applied' }))
+
+    expect(await screen.findByText('No jobs are marked Applied.')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /reset filters/i })).not.toBeInTheDocument()
+  })
+
   it('Fits Me star toggles and reverts on a mocked PATCH failure', async () => {
     mockJobsList([job({ id: '1', title: 'Saved Job', status: 'Saved', fits_me: false })])
     server.use(

@@ -45,17 +45,20 @@ function FilterButton({
   onClick,
   label,
   children,
+  testId,
 }: {
   active: boolean
   onClick: () => void
   label?: string
   children: React.ReactNode
+  testId?: string
 }) {
   return (
     <button
       onClick={onClick}
       aria-pressed={active}
       aria-label={label}
+      data-testid={testId}
       className={`text-xs rounded px-3 py-1.5 font-medium transition-colors ${
         active
           ? 'bg-blue-500 text-white'
@@ -75,6 +78,7 @@ export default function Tracking() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState<Tab>('All')
+  const [fitsMeFilter, setFitsMeFilter] = useState(false)
 
   useEffect(() => {
     setLoading(true)
@@ -112,8 +116,12 @@ export default function Tracking() {
   // operates over. "All" tab = every one of these.
   const trackedJobs = jobs.filter((job) => job.status !== 'New')
 
-  const filteredJobs =
+  const tabFilteredJobs =
     activeTab === 'All' ? trackedJobs : trackedJobs.filter((job) => job.status === activeTab)
+
+  const filteredJobs = fitsMeFilter
+    ? tabFilteredJobs.filter((job) => job.fits_me === true)
+    : tabFilteredJobs
 
   return (
     <div className="flex-1 text-slate-100 font-[system-ui]">
@@ -160,12 +168,25 @@ export default function Tracking() {
             {total > 0 && (
               <>
                 {/* Tab bar */}
-                <div className="flex items-center flex-wrap gap-2 mb-4" role="group" aria-label="Status tabs">
-                  {TABS.map((tab) => (
-                    <FilterButton key={tab} active={activeTab === tab} onClick={() => setActiveTab(tab)}>
-                      {tab}
+                <div className="flex items-center justify-between flex-wrap gap-2 mb-4">
+                  <div className="flex items-center flex-wrap gap-2" role="group" aria-label="Status tabs">
+                    {TABS.map((tab) => (
+                      <FilterButton key={tab} active={activeTab === tab} onClick={() => setActiveTab(tab)}>
+                        {tab}
+                      </FilterButton>
+                    ))}
+                  </div>
+
+                  <div className="flex items-center gap-2" role="group" aria-label="Filters">
+                    <FilterButton
+                      active={fitsMeFilter}
+                      onClick={() => setFitsMeFilter((prev) => !prev)}
+                      label="Show only Fits Me jobs"
+                      testId="fits-me-filter-button"
+                    >
+                      ★ Fits Me
                     </FilterButton>
-                  ))}
+                  </div>
                 </div>
 
                 {/* Empty state — no jobs tracked yet (every job is still New) */}
@@ -179,11 +200,24 @@ export default function Tracking() {
                 )}
 
                 {/* Empty state — this tab has zero matches, other tabs have jobs */}
-                {trackedJobs.length > 0 && filteredJobs.length === 0 && (
+                {trackedJobs.length > 0 && tabFilteredJobs.length === 0 && (
                   <div className="flex items-center justify-center py-24">
                     <p className="text-slate-400 text-sm text-center">
                       No jobs are marked {activeTab}.
                     </p>
+                  </div>
+                )}
+
+                {/* Empty state — tab has jobs, but none are Fits Me */}
+                {tabFilteredJobs.length > 0 && filteredJobs.length === 0 && (
+                  <div className="flex flex-col items-center justify-center py-24 gap-3">
+                    <p className="text-slate-400 text-sm text-center">No jobs match your filters.</p>
+                    <button
+                      onClick={() => setFitsMeFilter(false)}
+                      className="text-sm text-blue-400 hover:text-blue-300 underline"
+                    >
+                      Reset filters
+                    </button>
                   </div>
                 )}
 
