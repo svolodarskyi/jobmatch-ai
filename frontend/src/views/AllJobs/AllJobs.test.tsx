@@ -196,6 +196,60 @@ describe('AllJobs', () => {
     })
   })
 
+  it('reverts parent state (not just the badge) when Save fails, and a second click still works', async () => {
+    mockJobsList([mixedJobs[0]]) // status: 'New'
+    let patchCount = 0
+    server.use(
+      http.patch('http://localhost:8000/jobs/:id/status', async ({ request, params }) => {
+        patchCount += 1
+        const body = (await request.json()) as { status: string }
+        if (patchCount === 1) {
+          // First Save click: PATCH fails.
+          await delay(20)
+          return HttpResponse.error()
+        }
+        // Second Save click: PATCH succeeds.
+        return HttpResponse.json({
+          job_id: params.id,
+          status: body.status,
+          history: [{ status: body.status, changed_at: new Date().toISOString() }],
+          updated_at: new Date().toISOString(),
+        })
+      }),
+    )
+    const user = userEvent.setup()
+    render(<AllJobs />)
+
+    await screen.findByText('Data Engineer')
+    const saveButton = screen.getByTestId('save-button')
+    const badge = screen.getByTestId('status-badge')
+    expect(badge).toHaveTextContent('New')
+
+    // First click: optimistic flip, then revert once the PATCH fails.
+    await user.click(saveButton)
+    await waitFor(() => {
+      expect(badge).toHaveTextContent('Saved')
+    })
+    await waitFor(() => {
+      expect(badge).toHaveTextContent('New')
+    })
+    expect(patchCount).toBe(1)
+
+    // The badge reverted — prove AllJobs's own `jobs` state reverted too
+    // (not just a cosmetic local override in JobCard) by clicking Save
+    // again: if parent state were still stuck on "Saved", the "already
+    // Saved, no-op" guard would swallow this click and patchCount would
+    // stay at 1.
+    await user.click(saveButton)
+    expect(patchCount).toBe(2)
+    await waitFor(() => {
+      expect(badge).toHaveTextContent('Saved')
+    })
+    // And it stays "Saved" — no further, unexpected revert.
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    expect(badge).toHaveTextContent('Saved')
+  })
+
   it('Fits Me star fires the fits_me PATCH and reverts on a mocked failure', async () => {
     mockJobsList([mixedJobs[0]])
     server.use(

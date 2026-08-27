@@ -104,10 +104,33 @@ describe('JobCard', () => {
     render(<JobCard job={baseJob} onSave={onSave} />)
     await user.click(screen.getByTestId('save-button'))
 
-    expect(onSave).toHaveBeenCalledWith('1')
+    expect(onSave).toHaveBeenCalledWith('1', 'Saved')
     await waitFor(() => {
       expect(patchedBody).toEqual({ status: 'Saved' })
     })
+  })
+
+  it('reverts via onSave(id, previousStatus) — not a local override — when the status PATCH fails', async () => {
+    const user = userEvent.setup()
+    const onSave = vi.fn()
+    server.use(
+      http.patch('http://localhost:8000/jobs/:id/status', () => {
+        return HttpResponse.error()
+      }),
+    )
+
+    render(<JobCard job={baseJob} onSave={onSave} />)
+    await user.click(screen.getByTestId('save-button'))
+
+    // Optimistic call carries the new status...
+    expect(onSave).toHaveBeenNthCalledWith(1, '1', 'Saved')
+    // ...and on failure JobCard tells the parent to revert through the same
+    // channel (matching StatusDropdown.handleSelect / onFitsMeToggle), not a
+    // local-only override that leaves parent state stuck on "Saved".
+    await waitFor(() => {
+      expect(onSave).toHaveBeenNthCalledWith(2, '1', 'New')
+    })
+    expect(onSave).toHaveBeenCalledTimes(2)
   })
 
   it('renders Fits Me star and fires onFitsMeToggle + PATCH /jobs/{id}/fits_me when provided', async () => {

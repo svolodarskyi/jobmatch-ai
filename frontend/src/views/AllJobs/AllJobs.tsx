@@ -98,8 +98,8 @@ export default function AllJobs() {
     setJobs((prev) => prev.map((j) => (j.id === id ? { ...j, notes } : j)))
   }
 
-  function handleSave(id: string) {
-    setJobs((prev) => prev.map((j) => (j.id === id ? { ...j, status: 'Saved' } : j)))
+  function handleSave(id: string, status: string) {
+    setJobs((prev) => prev.map((j) => (j.id === id ? { ...j, status } : j)))
   }
 
   function handleFitsMeToggle(id: string, next: boolean) {

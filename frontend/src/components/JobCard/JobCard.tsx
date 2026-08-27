@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import StatusDropdown, { type StatusHistoryEntry } from '../StatusDropdown/StatusDropdown'
 import NotesPanel from '../NotesPanel/NotesPanel'
 
@@ -143,7 +143,7 @@ export interface JobCardProps {
   job: Job
   onStatusChange?: (id: string, newStatus: string, history: StatusHistoryEntry[]) => void
   onNotesChange?: (id: string, notes: string) => void
-  onSave?: (id: string) => void
+  onSave?: (id: string, status: string) => void
   onFitsMeToggle?: (id: string, next: boolean) => void
 }
 
@@ -160,19 +160,7 @@ export default function JobCard({
   const [dropdownOpen, setDropdownOpen] = useState(false)
   const [notesOpen, setNotesOpen] = useState(false)
 
-  // Save button has no way to tell the parent "revert to X" (its callback is
-  // `(id: string) => void`, unlike onStatusChange/onFitsMeToggle which carry
-  // the target value). So a failed Save reverts the *displayed* status here,
-  // locally, rather than round-tripping through parent state like the status
-  // dropdown does. Any legitimate status change coming back down through the
-  // `job` prop (dropdown, or a later successful sync) takes priority.
-  const [statusOverride, setStatusOverride] = useState<string | null>(null)
-  useEffect(() => {
-    setStatusOverride(null)
-  }, [job.status])
-
-  const displayedStatus = statusOverride ?? job.status
-  const statusStyle = STATUS_STYLES[displayedStatus] ?? { bg: '#334155', text: '#cbd5e1' }
+  const statusStyle = STATUS_STYLES[job.status] ?? { bg: '#334155', text: '#cbd5e1' }
 
   function handleStatusChange(newStatus: string, history: StatusHistoryEntry[]) {
     onStatusChange?.(job.id, newStatus, history)
@@ -183,10 +171,10 @@ export default function JobCard({
   }
 
   async function handleSaveClick() {
-    if (displayedStatus === 'Saved') return // already saved — no-op, use the dropdown to un-save
+    if (job.status === 'Saved') return // already saved — no-op, use the dropdown to un-save
 
-    const previousStatus = displayedStatus
-    onSave?.(job.id)
+    const previousStatus = job.status
+    onSave?.(job.id, 'Saved')
 
     try {
       const res = await fetch(`${API_BASE}/jobs/${job.id}/status`, {
@@ -196,7 +184,10 @@ export default function JobCard({
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
     } catch {
-      setStatusOverride(previousStatus)
+      // Revert through the same parent-state channel used for the optimistic
+      // write — matches StatusDropdown.handleSelect / onFitsMeToggle's shape,
+      // so AllJobs.jobs and the rendered badge never desync.
+      onSave?.(job.id, previousStatus)
     }
   }
 
@@ -266,13 +257,13 @@ export default function JobCard({
               style={{ backgroundColor: statusStyle.bg, color: statusStyle.text }}
               data-testid="status-badge"
             >
-              {displayedStatus}
+              {job.status}
             </button>
 
             {dropdownOpen && (
               <StatusDropdown
                 jobId={job.id}
-                currentStatus={displayedStatus}
+                currentStatus={job.status}
                 history={job.status_history ?? []}
                 onClose={() => setDropdownOpen(false)}
                 onStatusChange={handleStatusChange}
@@ -292,10 +283,10 @@ export default function JobCard({
           {onSave && (
             <button
               onClick={handleSaveClick}
-              aria-pressed={displayedStatus === 'Saved'}
+              aria-pressed={job.status === 'Saved'}
               data-testid="save-button"
               className={
-                displayedStatus === 'Saved'
+                job.status === 'Saved'
                   ? 'text-xs rounded px-2 py-0.5 font-medium bg-blue-500 text-white transition-colors'
                   : 'text-xs rounded px-2 py-0.5 font-medium border border-blue-500 text-blue-400 hover:bg-blue-500/10 transition-colors'
               }
