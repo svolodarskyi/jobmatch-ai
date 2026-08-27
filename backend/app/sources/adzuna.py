@@ -18,11 +18,14 @@ class AdzunaError(Exception):
     """Raised when the Adzuna API returns a 4xx or 5xx response."""
 
 
-async def fetch_jobs(title: str) -> list[dict[str, object]]:
+async def fetch_jobs(title: str, max_days_old: int = 30) -> list[dict[str, object]]:
     """Fetch page 1 of Canadian Adzuna listings for *title*.
 
     Args:
         title: The job title to search for (e.g. "Data Engineer").
+        max_days_old: Only return listings posted within this many days.
+            Passed directly to Adzuna as the ``max_days_old`` query param.
+            Defaults to 30.
 
     Returns:
         A list of raw job dicts from the ``results`` key of the Adzuna
@@ -38,6 +41,7 @@ async def fetch_jobs(title: str) -> list[dict[str, object]]:
         "app_key": settings.ADZUNA_APP_KEY,
         "what": title,
         "results_per_page": str(_RESULTS_PER_PAGE),
+        "max_days_old": str(max_days_old),
     }
 
     async with httpx.AsyncClient() as client:

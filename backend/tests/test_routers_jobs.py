@@ -124,7 +124,11 @@ def test_pipeline_run_happy_path_returns_correct_counts():
 
         result = asyncio.run(run(SAMPLE_PROFILE, mock_db))
 
-    assert result == {"fetched": 2, "new": 2, "scored": 2}
+    assert result["fetched"] == 2
+    assert result["new"] == 2
+    assert result["scored"] == 2
+    assert "fetched_by_source" in result
+    assert "window_days" in result
     mock_persist.assert_called_once()
     mock_rerank.assert_called_once()
 
@@ -255,7 +259,9 @@ def test_pipeline_run_empty_titles_returns_zero_counts():
 
         result = asyncio.run(run(profile_no_titles, mock_db))
 
-    assert result == {"fetched": 0, "new": 0, "scored": 0}
+    assert result["fetched"] == 0
+    assert result["new"] == 0
+    assert result["scored"] == 0
     mock_adzuna.assert_not_called()
     mock_jooble.assert_not_called()
 

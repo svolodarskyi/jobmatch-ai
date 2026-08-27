@@ -142,7 +142,7 @@ def list_jobs(
 
 
 @router.post("/fetch")
-async def fetch_jobs(db: Client = Depends(get_db)) -> dict[str, int]:  # noqa: B008
+async def fetch_jobs(db: Client = Depends(get_db)) -> dict[str, object]:  # noqa: B008
     """Trigger the full fetch → normalize → score → re-rank pipeline.
 
     Reads the stored profile from the database, then runs the pipeline which:
@@ -153,7 +153,8 @@ async def fetch_jobs(db: Client = Depends(get_db)) -> dict[str, int]:  # noqa: B
     - Persists llm_score and llm_rationale back to the job table
 
     Returns:
-        A summary dict: ``{"fetched": N, "new": M, "scored": K}``
+        A summary dict: ``{"fetched": N, "fetched_by_source": {"adzuna": N, "jooble": M},
+        "window_days": K, "new": M, "scored": K}``
 
     Raises:
         404: No profile has been saved yet.

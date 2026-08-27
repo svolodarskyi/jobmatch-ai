@@ -81,3 +81,33 @@ def test_fetch_jobs_500_raises_adzuna_error():
 
         with pytest.raises(AdzunaError):
             asyncio.run(fetch_jobs("Backend Developer"))
+
+
+def test_fetch_jobs_passes_max_days_old_param():
+    """max_days_old must appear as a query param when explicitly provided."""
+    fixture = _load_fixture("adzuna_sample.json")
+
+    with respx.mock:
+        route = respx.get(_ADZUNA_URL).mock(
+            return_value=Response(200, json=fixture)
+        )
+        asyncio.run(fetch_jobs("Data Engineer", max_days_old=7))
+
+    assert route.called
+    sent_request = route.calls.last.request
+    assert sent_request.url.params["max_days_old"] == "7"
+
+
+def test_fetch_jobs_default_max_days_old_is_30():
+    """When max_days_old is not specified, it defaults to 30."""
+    fixture = _load_fixture("adzuna_sample.json")
+
+    with respx.mock:
+        route = respx.get(_ADZUNA_URL).mock(
+            return_value=Response(200, json=fixture)
+        )
+        asyncio.run(fetch_jobs("Software Engineer"))
+
+    assert route.called
+    sent_request = route.calls.last.request
+    assert sent_request.url.params["max_days_old"] == "30"

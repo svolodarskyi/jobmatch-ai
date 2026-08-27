@@ -31,17 +31,28 @@ def _make_job(source: str = "adzuna", external_id: str = "abc123") -> Job:
     )
 
 
-def _make_mock_db() -> MagicMock:
+def _make_mock_db(existing_job_count: int = 1) -> MagicMock:
     """Return a MagicMock that mimics the Supabase client chained call pattern.
 
-    Supports: db.table(...).upsert(...).execute()
+    Supports:
+    - db.table(...).upsert(...).execute()
+    - db.table(...).select(..., count="exact").execute()  → .count = existing_job_count
+    - db.table(...).update(...).eq(...).eq(...).execute()
+
+    Args:
+        existing_job_count: Value returned by the count query in pipeline.run()
+            to simulate first-run (0) vs. subsequent-run (>0) detection.
     """
     execute_result = MagicMock()
     execute_result.data = []
+    execute_result.count = existing_job_count
 
     chain = MagicMock()
     chain.execute.return_value = execute_result
     chain.upsert.return_value = chain
+    chain.select.return_value = chain
+    chain.update.return_value = chain
+    chain.eq.return_value = chain
 
     mock_db = MagicMock(spec=Client)
     mock_db.table.return_value = chain
@@ -174,11 +185,11 @@ def _make_ranked_job(job: Job, llm_score: float | None = 85.0) -> RankedJob:
 
 
 def test_pipeline_run_happy_path_returns_correct_counts() -> None:
-    """pipeline.run() returns fetched/new/scored counts from mocked collaborators."""
+    """pipeline.run() returns fetched/new/scored counts and new keys from mocked collaborators."""
     job_a = _make_job("adzuna", "a1")
     job_j = _make_job("jooble", "j1")
     ranked = [_make_ranked_job(job_a), _make_ranked_job(job_j)]
-    mock_db = _make_mock_db()
+    mock_db = _make_mock_db(existing_job_count=1)
 
     with (
         patch("app.pipeline.adzuna.fetch_jobs", new=AsyncMock(return_value=[{"id": "a1"}])),
@@ -193,14 +204,18 @@ def test_pipeline_run_happy_path_returns_correct_counts() -> None:
 
         result = asyncio.run(run(_SAMPLE_PROFILE, mock_db))
 
-    assert result == {"fetched": 2, "new": 2, "scored": 2}
+    assert result["fetched"] == 2
+    assert result["new"] == 2
+    assert result["scored"] == 2
+    assert "fetched_by_source" in result
+    assert "window_days" in result
 
 
 def test_pipeline_run_pass2_failure_still_returns_summary() -> None:
     """When Pass 2 returns jobs with llm_score=None, pipeline completes normally."""
     job_a = _make_job("adzuna", "a1")
     ranked = [_make_ranked_job(job_a, llm_score=None)]
-    mock_db = _make_mock_db()
+    mock_db = _make_mock_db(existing_job_count=1)
 
     with (
         patch("app.pipeline.adzuna.fetch_jobs", new=AsyncMock(return_value=[{"id": "a1"}])),
@@ -223,7 +238,7 @@ def test_pipeline_run_dedup_does_not_inflate_new() -> None:
     """'new' count comes from persist_jobs — dedup returning lower count is reflected."""
     job_a = _make_job("adzuna", "dupe-1")
     ranked = [_make_ranked_job(job_a)]
-    mock_db = _make_mock_db()
+    mock_db = _make_mock_db(existing_job_count=1)
 
     with (
         patch(
@@ -242,3 +257,68 @@ def test_pipeline_run_dedup_does_not_inflate_new() -> None:
 
     assert result["fetched"] == 2
     assert result["new"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Adaptive fetch window: first-run vs. subsequent-run detection
+# ---------------------------------------------------------------------------
+
+
+def test_pipeline_first_run_uses_initial_window() -> None:
+    """When DB has 0 job rows, pipeline uses FETCH_INITIAL_DAYS as max_days_old."""
+    job_a = _make_job("adzuna", "a1")
+    ranked = [_make_ranked_job(job_a)]
+    # existing_job_count=0 triggers first-run path
+    mock_db = _make_mock_db(existing_job_count=0)
+
+    adzuna_mock = AsyncMock(return_value=[{"id": "a1"}])
+
+    with (
+        patch("app.pipeline.adzuna.fetch_jobs", new=adzuna_mock),
+        patch("app.pipeline.jooble.fetch_jobs", new=AsyncMock(return_value=[])),
+        patch("app.pipeline.normalize_adzuna", return_value=job_a),
+        patch("app.pipeline.persist_jobs", return_value=1),
+        patch("app.pipeline.pass1.score", return_value={"score": 72.0}),
+        patch("app.pipeline.pass2.rerank", return_value=ranked),
+    ):
+        from app.pipeline import run
+        from app.settings import settings
+
+        result = asyncio.run(run(_SAMPLE_PROFILE, mock_db))
+
+    # Verify the window reported in the result matches initial days
+    assert result["window_days"] == settings.FETCH_INITIAL_DAYS
+    # Verify adzuna was called with the initial window
+    adzuna_mock.assert_called_once_with(
+        _SAMPLE_PROFILE.target_titles[0], settings.FETCH_INITIAL_DAYS
+    )
+
+
+def test_pipeline_subsequent_run_uses_incremental_window() -> None:
+    """When DB has existing job rows, pipeline uses FETCH_INCREMENTAL_DAYS as max_days_old."""
+    job_a = _make_job("adzuna", "a1")
+    ranked = [_make_ranked_job(job_a)]
+    # existing_job_count=42 triggers subsequent-run path
+    mock_db = _make_mock_db(existing_job_count=42)
+
+    adzuna_mock = AsyncMock(return_value=[{"id": "a1"}])
+
+    with (
+        patch("app.pipeline.adzuna.fetch_jobs", new=adzuna_mock),
+        patch("app.pipeline.jooble.fetch_jobs", new=AsyncMock(return_value=[])),
+        patch("app.pipeline.normalize_adzuna", return_value=job_a),
+        patch("app.pipeline.persist_jobs", return_value=1),
+        patch("app.pipeline.pass1.score", return_value={"score": 72.0}),
+        patch("app.pipeline.pass2.rerank", return_value=ranked),
+    ):
+        from app.pipeline import run
+        from app.settings import settings
+
+        result = asyncio.run(run(_SAMPLE_PROFILE, mock_db))
+
+    # Verify the window reported in the result matches incremental days
+    assert result["window_days"] == settings.FETCH_INCREMENTAL_DAYS
+    # Verify adzuna was called with the incremental window
+    adzuna_mock.assert_called_once_with(
+        _SAMPLE_PROFILE.target_titles[0], settings.FETCH_INCREMENTAL_DAYS
+    )

@@ -21,5 +21,9 @@ class Settings(BaseSettings):
     # Scheduler: how often to run the fetch pipeline (in hours)
     FETCH_INTERVAL_HOURS: int = 24
 
+    # Fetch window: days of listings to retrieve on first run vs. subsequent runs
+    FETCH_INITIAL_DAYS: int = 15
+    FETCH_INCREMENTAL_DAYS: int = 1
+
 
 settings = Settings()
