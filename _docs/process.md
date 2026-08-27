@@ -9,3 +9,7 @@ Before closing a task, re-read the acceptance criteria and confirm each point is
 
 Commit regularly — at least after each logical step, not just at the end of a session.
 Commit messages should say why, not just what. Use `gh issue close <number>` when done.
+
+## Roles
+
+- PM - grooms a task before anyone implements it, follows \_docs/team/pm.md
