@@ -9,6 +9,12 @@ services:
       - ./backend:/app
     env_file:
       - .env
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     restart: unless-stopped
 
   frontend:
@@ -21,4 +27,7 @@ services:
       - ./frontend:/app
       # Shield the image's node_modules from being overwritten by the host mount.
       - /app/node_modules
+    depends_on:
+      backend:
+        condition: service_healthy
     restart: unless-stopped

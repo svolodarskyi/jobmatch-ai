@@ -6,7 +6,7 @@ WORKDIR /app
 # Source code is bind-mounted at runtime — no COPY . . here.
 COPY package.json package-lock.json ./
 
-RUN npm install
+RUN npm ci
 
 # node_modules lives inside the image layer; the docker-compose anonymous
 # volume at /app/node_modules shields it from being overwritten by the
