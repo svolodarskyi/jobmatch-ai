@@ -1,3 +1,7 @@
+import { useState } from 'react'
+import StatusDropdown, { type StatusHistoryEntry } from '../StatusDropdown/StatusDropdown'
+import NotesPanel from '../NotesPanel/NotesPanel'
+
 export interface Job {
   id: string
   source: string
@@ -13,6 +17,7 @@ export interface Job {
   llm_rationale: string | null
   status: string
   notes: string
+  status_history?: StatusHistoryEntry[]
 }
 
 // ── Score Ring ───────────────────────────────────────────────────────────────
@@ -81,16 +86,65 @@ function formatDate(iso: string): string {
   })
 }
 
+// ── Status history ───────────────────────────────────────────────────────────
+
+function StatusHistory({ history }: { history: StatusHistoryEntry[] }) {
+  const [expanded, setExpanded] = useState(false)
+  if (history.length === 0) return null
+  return (
+    <div className="mt-1">
+      <button
+        onClick={() => setExpanded((v) => !v)}
+        className="text-xs text-slate-500 hover:text-slate-300 transition-colors"
+        aria-expanded={expanded}
+      >
+        {expanded ? '▾ Hide history' : '▸ Status history'}
+      </button>
+      {expanded && (
+        <ul className="mt-1 flex flex-col gap-0.5 pl-2 border-l border-slate-700">
+          {history.map((entry, i) => {
+            const style = STATUS_STYLES[entry.status] ?? { bg: '#334155', text: '#cbd5e1' }
+            return (
+              <li key={i} className="flex items-center gap-2 text-xs text-slate-400">
+                <span
+                  className="rounded px-1.5 py-0.5 font-medium"
+                  style={{ backgroundColor: style.bg, color: style.text }}
+                >
+                  {entry.status}
+                </span>
+                <span>{formatDate(entry.changed_at)}</span>
+              </li>
+            )
+          })}
+        </ul>
+      )}
+    </div>
+  )
+}
+
 // ── JobCard ──────────────────────────────────────────────────────────────────
 
 export interface JobCardProps {
   job: Job
+  onStatusChange?: (id: string, newStatus: string, history: StatusHistoryEntry[]) => void
+  onNotesChange?: (id: string, notes: string) => void
 }
 
-export default function JobCard({ job }: JobCardProps) {
+export default function JobCard({ job, onStatusChange, onNotesChange }: JobCardProps) {
   const score = job.llm_score ?? job.raw_score
   const statusStyle = STATUS_STYLES[job.status] ?? { bg: '#334155', text: '#cbd5e1' }
   const salary = formatSalary(job.salary_min, job.salary_max)
+
+  const [dropdownOpen, setDropdownOpen] = useState(false)
+  const [notesOpen, setNotesOpen] = useState(false)
+
+  function handleStatusChange(newStatus: string, history: StatusHistoryEntry[]) {
+    onStatusChange?.(job.id, newStatus, history)
+  }
+
+  function handleNotesSaved(notes: string) {
+    onNotesChange?.(job.id, notes)
+  }
 
   return (
     <div className="bg-slate-800 border border-slate-700 rounded-lg p-4 flex flex-row gap-4 relative">
@@ -129,15 +183,31 @@ export default function JobCard({ job }: JobCardProps) {
           </p>
         )}
 
-        {/* Footer row: status badge + view link */}
+        {/* Footer row: status badge + buttons */}
         <div className="flex items-center gap-3 mt-2">
-          <span
-            className="text-xs rounded px-2 py-0.5 font-medium"
-            style={{ backgroundColor: statusStyle.bg, color: statusStyle.text }}
-            data-testid="status-badge"
-          >
-            {job.status}
-          </span>
+          {/* Clickable status badge — toggles dropdown */}
+          <div className="relative">
+            <button
+              onClick={() => setDropdownOpen((v) => !v)}
+              aria-haspopup="listbox"
+              aria-expanded={dropdownOpen}
+              className="text-xs rounded px-2 py-0.5 font-medium cursor-pointer hover:opacity-80 transition-opacity"
+              style={{ backgroundColor: statusStyle.bg, color: statusStyle.text }}
+              data-testid="status-badge"
+            >
+              {job.status}
+            </button>
+
+            {dropdownOpen && (
+              <StatusDropdown
+                jobId={job.id}
+                currentStatus={job.status}
+                history={job.status_history ?? []}
+                onClose={() => setDropdownOpen(false)}
+                onStatusChange={handleStatusChange}
+              />
+            )}
+          </div>
 
           <a
             href={job.url}
@@ -147,8 +217,30 @@ export default function JobCard({ job }: JobCardProps) {
           >
             View listing
           </a>
+
+          <button
+            onClick={() => setNotesOpen(true)}
+            className="text-xs text-slate-400 hover:text-slate-200 transition-colors"
+            data-testid="notes-button"
+          >
+            Notes
+          </button>
         </div>
+
+        {/* Status history */}
+        <StatusHistory history={job.status_history ?? []} />
       </div>
+
+      {/* Notes panel */}
+      {notesOpen && (
+        <NotesPanel
+          jobId={job.id}
+          jobTitle={job.title}
+          initialNotes={job.notes}
+          onClose={() => setNotesOpen(false)}
+          onNotesSaved={handleNotesSaved}
+        />
+      )}
     </div>
   )
 }

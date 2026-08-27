@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import JobCard, { type Job } from '../../components/JobCard/JobCard'
+import { type StatusHistoryEntry } from '../../components/StatusDropdown/StatusDropdown'
 import FiltersBar, {
   type Filters,
   DEFAULT_FILTERS,
@@ -65,6 +66,18 @@ export default function Dashboard() {
       .finally(() => setLoading(false))
   }, [filters])
 
+  function handleStatusChange(id: string, newStatus: string, history: StatusHistoryEntry[]) {
+    setJobs((prev) =>
+      prev.map((j) =>
+        j.id === id ? { ...j, status: newStatus, status_history: history } : j,
+      ),
+    )
+  }
+
+  function handleNotesChange(id: string, notes: string) {
+    setJobs((prev) => prev.map((j) => (j.id === id ? { ...j, notes } : j)))
+  }
+
   return (
     <div className="min-h-screen bg-slate-900 text-slate-100 font-[system-ui] flex flex-row">
       {/* Sidebar */}
@@ -117,7 +130,12 @@ export default function Dashboard() {
               {jobs.length > 0 && (
                 <div className="flex flex-col gap-4">
                   {jobs.map((job) => (
-                    <JobCard key={job.id} job={job} />
+                    <JobCard
+                      key={job.id}
+                      job={job}
+                      onStatusChange={handleStatusChange}
+                      onNotesChange={handleNotesChange}
+                    />
                   ))}
                 </div>
               )}

@@ -42,4 +42,23 @@ export const handlers = [
     const body = await request.json()
     return HttpResponse.json({ id: 'test-id', ...(body as object) })
   }),
+
+  http.patch('http://localhost:8000/jobs/:id/status', async ({ request, params }) => {
+    const body = await request.json() as { status: string }
+    return HttpResponse.json({
+      job_id: params.id,
+      status: body.status,
+      history: [{ status: body.status, changed_at: new Date().toISOString() }],
+      updated_at: new Date().toISOString(),
+    })
+  }),
+
+  http.patch('http://localhost:8000/jobs/:id/notes', async ({ request, params }) => {
+    const body = await request.json() as { notes: string }
+    return HttpResponse.json({
+      job_id: params.id,
+      notes: body.notes,
+      updated_at: new Date().toISOString(),
+    })
+  }),
 ]
