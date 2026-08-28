@@ -96,6 +96,24 @@ def test_list_fetch_runs_empty_table():
     assert data["runs"] == []
 
 
+def test_list_fetch_runs_returns_running_for_in_flight_row():
+    """GET /fetch-runs returns status='running' for a row still in progress
+    (completed_at is null) — issue #50.
+    """
+    in_flight_run = {**SAMPLE_RUN, "completed_at": None, "status": "running"}
+    mock_db = _make_mock_db([in_flight_run])
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    client = TestClient(app)
+    response = client.get("/fetch-runs")
+
+    assert response.status_code == 200
+    data = response.json()
+    run = data["runs"][0]
+    assert run["completed_at"] is None
+    assert run["status"] == "running"
+
+
 def test_list_fetch_runs_limit_param():
     """GET /fetch-runs?limit=5 passes limit=5 to the DB chain."""
     mock_db = _make_mock_db([])

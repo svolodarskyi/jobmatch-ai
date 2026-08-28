@@ -6,6 +6,9 @@ from pydantic import BaseModel
 # Valid application status values
 ApplicationStatus = Literal["New", "Saved", "Applied", "Interviewing", "Rejected", "Offer"]
 
+# Valid fetch_run status values
+FetchRunStatus = Literal["running", "ok", "partial", "error"]
+
 
 class Profile(BaseModel):
     target_titles: list[str] = []
@@ -138,7 +141,7 @@ class FetchRunOut(BaseModel):
     tokens_in: int | None = None
     tokens_out: int | None = None
     cost_usd: float | None = None
-    status: str = "ok"
+    status: FetchRunStatus
     error_message: str | None = None
 
 

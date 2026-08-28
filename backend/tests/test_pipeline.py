@@ -701,6 +701,41 @@ def test_pipeline_run_marks_fetch_run_error_on_unhandled_exception() -> None:
         assert field not in payload
 
 
+# ---------------------------------------------------------------------------
+# fetch_run initial status="running" — issue #50
+#
+# Distinct from test_pipeline_run_writes_fetch_run_row (which only checks the
+# table was touched) and from the terminal-status tests above (which assert
+# the final UPDATE payload) — this asserts the INSERT payload itself, before
+# any work happens, carries status="running" rather than the stale "ok".
+# ---------------------------------------------------------------------------
+
+
+def test_pipeline_run_inserts_fetch_run_with_running_status() -> None:
+    """The Step 2 fetch_run INSERT payload must have status='running', not 'ok'."""
+    job_a = _make_job("adzuna", "a1")
+    ranked_jobs = [_make_ranked_job(job_a)]
+    rerank_result = RerankResult(jobs=ranked_jobs, tokens_in=150, tokens_out=30)
+    mock_db = _make_mock_db(existing_job_count=1)
+
+    with (
+        patch("app.pipeline.adzuna.fetch_jobs", new=AsyncMock(return_value=[{"id": "a1"}])),
+        patch("app.pipeline.jooble.fetch_jobs", new=AsyncMock(return_value=[])),
+        patch("app.pipeline.normalize_adzuna", return_value=job_a),
+        patch("app.pipeline.persist_jobs", return_value=_PERSIST_RESULT_1),
+        patch("app.pipeline.pass1.score", return_value={"score": 72.0}),
+        patch("app.pipeline.pass2.rerank", return_value=rerank_result),
+    ):
+        from app.pipeline import run
+
+        asyncio.run(run(_SAMPLE_PROFILE, mock_db))
+
+    chain = mock_db.table.return_value
+    insert_payloads = [call.args[0] for call in chain.insert.call_args_list]
+    assert len(insert_payloads) == 1, "expected exactly one fetch_run insert call"
+    assert insert_payloads[0]["status"] == "running"
+
+
 def test_pipeline_run_no_op_when_fetch_run_insert_failed() -> None:
     """If the initial fetch_run insert itself fails to yield a run_id, the
     exception still propagates but no fetch_run update is attempted — there

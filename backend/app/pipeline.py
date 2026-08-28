@@ -153,7 +153,7 @@ async def run(profile: Profile, db: Client) -> dict[str, object]:
     # Step 2: Open a fetch_run row to record pipeline instrumentation
     # ------------------------------------------------------------------
     run_result = db.table("fetch_run").insert(
-        {"status": "ok", "window_days": max_days_old}
+        {"status": "running", "window_days": max_days_old}
     ).execute()
     run_id: str | None = None
     if run_result.data:
@@ -169,8 +169,8 @@ async def run(profile: Profile, db: Client) -> dict[str, object]:
     # this try/except is for exceptions that escape that handling entirely
     # (e.g. a DB write failure in persist_jobs, a bug in Pass 1/Pass 2). On
     # such an exception the fetch_run row is marked status="error" (instead
-    # of being stuck at its initial status="ok" with completed_at=null) and
-    # the exception is re-raised so callers see it unchanged.
+    # of being stuck at its initial status="running" with completed_at=null)
+    # and the exception is re-raised so callers see it unchanged.
     # ------------------------------------------------------------------
     try:
         # ------------------------------------------------------------------
