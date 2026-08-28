@@ -72,7 +72,7 @@ export const handlers = [
   }),
 
   http.post('http://localhost:8000/jobs/fetch', () => {
-    return HttpResponse.json({ fetched: 48, new: 12, updated: 3, scored_pass1: 48, scored_pass2: 15 })
+    return HttpResponse.json({ status: 'started' }, { status: 202 })
   }),
 
   http.get('http://localhost:8000/fetch-runs', () => {
