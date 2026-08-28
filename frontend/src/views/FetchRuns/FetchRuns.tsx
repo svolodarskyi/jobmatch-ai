@@ -1,6 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 const API_BASE = 'http://localhost:8000'
+const POLL_INTERVAL_MS = 3000
+const POLL_TIMEOUT_MS = 5 * 60 * 1000
 
 interface SourceStat {
   new?: number
@@ -81,10 +83,53 @@ function formatSourceStat(stat: SourceStat | undefined): string {
   return `${n} new / ${u} updated`
 }
 
-export default function FetchRuns() {
+function hasRunningRow(runs: FetchRun[]): boolean {
+  return runs.some((run) => run.completed_at === null)
+}
+
+interface FetchRunsProps {
+  /** Override poll interval (ms). Default 3000. Use a small value in tests. */
+  pollInterval?: number
+}
+
+export default function FetchRuns({ pollInterval = POLL_INTERVAL_MS }: FetchRunsProps = {}) {
   const [runs, setRuns] = useState<FetchRun[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const deadlineRef = useRef<number>(0)
+
+  useEffect(() => {
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current)
+    }
+  }, [])
+
+  function stopPolling() {
+    if (pollRef.current) {
+      clearInterval(pollRef.current)
+      pollRef.current = null
+    }
+  }
+
+  async function pollForUpdates() {
+    if (Date.now() > deadlineRef.current) {
+      stopPolling()
+      return
+    }
+
+    try {
+      const res = await fetch(`${API_BASE}/fetch-runs?limit=100`)
+      if (!res.ok) return
+      const data = (await res.json()) as { runs: FetchRun[] }
+      setRuns(data.runs)
+      if (!hasRunningRow(data.runs)) {
+        stopPolling()
+      }
+    } catch {
+      // transient network error — keep polling
+    }
+  }
 
   useEffect(() => {
     setLoading(true)
@@ -96,11 +141,16 @@ export default function FetchRuns() {
       })
       .then((data: { runs: FetchRun[] }) => {
         setRuns(data.runs)
+        if (hasRunningRow(data.runs)) {
+          deadlineRef.current = Date.now() + POLL_TIMEOUT_MS
+          pollRef.current = setInterval(pollForUpdates, pollInterval)
+        }
       })
       .catch((err: unknown) => {
         setError(err instanceof Error ? err.message : 'Failed to load fetch runs.')
       })
       .finally(() => setLoading(false))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   return (

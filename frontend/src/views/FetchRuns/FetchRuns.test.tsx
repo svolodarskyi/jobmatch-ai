@@ -1,7 +1,9 @@
 import { http, HttpResponse } from 'msw'
 import { server } from '../../mocks/server'
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import FetchRuns from './FetchRuns'
+
+const POLL_MS = 50
 
 const mockRun = {
   id: '1',
@@ -158,5 +160,91 @@ describe('FetchRuns', () => {
     expect(dashTexts.filter((t) => t === '—').length).toBeGreaterThanOrEqual(4)
     // Missing source keys still default to 0, not dash
     expect(row?.textContent).toContain('0 new / 0 updated')
+  })
+
+  it('polls and updates the table in place when a running row completes, with no new spinner/badge', async () => {
+    server.use(
+      http.get(
+        'http://localhost:8000/fetch-runs',
+        () => HttpResponse.json({ runs: [runningRun] }),
+        { once: true },
+      ),
+      http.get('http://localhost:8000/fetch-runs', () =>
+        HttpResponse.json({ runs: [{ ...runningRun, completed_at: '2026-08-27T10:00:08Z', status: 'ok' }] }),
+      ),
+    )
+
+    render(<FetchRuns pollInterval={POLL_MS} />)
+
+    await screen.findByRole('table')
+    expect(document.querySelector('tr[data-status="running"]')).toBeInTheDocument()
+
+    // Table updates in place after the poll picks up completion — no remount, no new spinner/badge.
+    await waitFor(() => {
+      expect(document.querySelector('tr[data-status="running"]')).not.toBeInTheDocument()
+      expect(document.querySelector('tr[data-status="ok"]')).toBeInTheDocument()
+    })
+    expect(screen.queryByLabelText(/live/i)).not.toBeInTheDocument()
+    expect(document.querySelector('[class*="animate-spin"]')).not.toBeInTheDocument()
+  })
+
+  it('does not start polling when the initial load has no running row', async () => {
+    let callCount = 0
+    server.use(
+      http.get('http://localhost:8000/fetch-runs', () => {
+        callCount += 1
+        return HttpResponse.json({ runs: [mockRun] })
+      }),
+    )
+
+    render(<FetchRuns pollInterval={POLL_MS} />)
+    await screen.findByRole('table')
+
+    // Give a few poll intervals worth of time to elapse; call count should stay at 1 (no polling).
+    await new Promise((resolve) => setTimeout(resolve, POLL_MS * 4))
+    expect(callCount).toBe(1)
+  })
+
+  it('does not start polling when the initial load fails', async () => {
+    let callCount = 0
+    server.use(
+      http.get('http://localhost:8000/fetch-runs', () => {
+        callCount += 1
+        return HttpResponse.json({ detail: 'boom' }, { status: 500 })
+      }),
+    )
+
+    render(<FetchRuns pollInterval={POLL_MS} />)
+    expect(await screen.findByRole('alert')).toBeInTheDocument()
+
+    await new Promise((resolve) => setTimeout(resolve, POLL_MS * 4))
+    expect(callCount).toBe(1)
+  })
+
+  it('a failed poll request does not stop polling and does not populate the error banner', async () => {
+    let callCount = 0
+    server.use(
+      http.get('http://localhost:8000/fetch-runs', () => {
+        callCount += 1
+        if (callCount === 1) {
+          return HttpResponse.json({ runs: [runningRun] })
+        }
+        if (callCount === 2) {
+          // Transient failure on the first poll — should be swallowed, not shown, and not stop polling.
+          return HttpResponse.json({ detail: 'boom' }, { status: 500 })
+        }
+        return HttpResponse.json({
+          runs: [{ ...runningRun, completed_at: '2026-08-27T10:00:08Z', status: 'ok' }],
+        })
+      }),
+    )
+
+    render(<FetchRuns pollInterval={POLL_MS} />)
+    await screen.findByRole('table')
+
+    await waitFor(() => {
+      expect(document.querySelector('tr[data-status="ok"]')).toBeInTheDocument()
+    })
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 })
