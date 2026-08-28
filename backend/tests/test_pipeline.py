@@ -7,6 +7,7 @@ database connections. Async tests use asyncio.run() directly.
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from supabase import Client
 
 from app.pipeline import persist_jobs
@@ -641,3 +642,88 @@ def test_pipeline_source_stats_empty_when_no_titles() -> None:
 
     source_stats = _get_source_stats(mock_db)
     assert source_stats == {}
+
+
+# ---------------------------------------------------------------------------
+# fetch_run marked status="error" on unhandled exception — issue #44
+#
+# Distinct from status="partial" (per-source fetch failures handled inline
+# by _fetch_source, or Pass 2 misses) — this covers an exception that
+# escapes that handling entirely, e.g. a DB write failure in persist_jobs.
+# ---------------------------------------------------------------------------
+
+
+def test_pipeline_run_marks_fetch_run_error_on_unhandled_exception() -> None:
+    """An exception raised after run_id is obtained (e.g. persist_jobs failing)
+    must propagate to the caller AND update fetch_run with status="error",
+    a non-null completed_at, and error_message set — without any of the
+    "success" fields (fetched_total, source_stats, etc.) in that payload.
+    """
+    mock_db = _make_mock_db(existing_job_count=1)
+    boom = RuntimeError("persist_jobs blew up")
+
+    with (
+        patch("app.pipeline.adzuna.fetch_jobs", new=AsyncMock(return_value=[{"id": "a1"}])),
+        patch("app.pipeline.jooble.fetch_jobs", new=AsyncMock(return_value=[])),
+        patch("app.pipeline.normalize_adzuna", return_value=_make_job("adzuna", "a1")),
+        patch("app.pipeline.persist_jobs", side_effect=boom),
+    ):
+        from app.pipeline import run
+
+        with pytest.raises(RuntimeError, match="persist_jobs blew up"):
+            asyncio.run(run(_SAMPLE_PROFILE, mock_db))
+
+    chain = mock_db.table.return_value
+    error_payloads = [
+        call.args[0]
+        for call in chain.update.call_args_list
+        if call.args[0].get("status") == "error"
+    ]
+    assert len(error_payloads) == 1, "expected exactly one status='error' fetch_run update"
+    payload = error_payloads[0]
+
+    assert payload["status"] == "error"
+    assert payload["completed_at"]  # non-empty string
+    assert "persist_jobs blew up" in payload["error_message"]
+
+    # None of the success-path fields were guessed/partially written.
+    for field in (
+        "fetched_total",
+        "new_jobs",
+        "updated_jobs",
+        "scored_pass1",
+        "scored_pass2",
+        "source_stats",
+        "tokens_in",
+        "tokens_out",
+        "cost_usd",
+    ):
+        assert field not in payload
+
+
+def test_pipeline_run_no_op_when_fetch_run_insert_failed() -> None:
+    """If the initial fetch_run insert itself fails to yield a run_id, the
+    exception still propagates but no fetch_run update is attempted — there
+    is no row to mark. This is a deliberate no-op, not a bug.
+    """
+    mock_db = _make_mock_db(existing_job_count=1)
+    # Force the fetch_run insert to return no data, so run_id stays None.
+    no_row_insert_result = MagicMock()
+    no_row_insert_result.data = []
+    chain = mock_db.table.return_value
+    chain.insert.side_effect = lambda *a, **kw: _make_insert_chain(no_row_insert_result)
+
+    boom = RuntimeError("persist_jobs blew up")
+
+    with (
+        patch("app.pipeline.adzuna.fetch_jobs", new=AsyncMock(return_value=[{"id": "a1"}])),
+        patch("app.pipeline.jooble.fetch_jobs", new=AsyncMock(return_value=[])),
+        patch("app.pipeline.normalize_adzuna", return_value=_make_job("adzuna", "a1")),
+        patch("app.pipeline.persist_jobs", side_effect=boom),
+    ):
+        from app.pipeline import run
+
+        with pytest.raises(RuntimeError, match="persist_jobs blew up"):
+            asyncio.run(run(_SAMPLE_PROFILE, mock_db))
+
+    assert chain.update.call_args_list == []

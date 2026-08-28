@@ -161,160 +161,184 @@ async def run(profile: Profile, db: Client) -> dict[str, object]:
         run_id = str(first_row["id"])
 
     # ------------------------------------------------------------------
-    # Step 3: Fetch from both sources in parallel for all target titles
+    # Steps 3-9: fetch, normalize, persist, score, and finalize the run.
+    #
+    # Everything from here through the end of the function is wrapped in a
+    # single try/except. A per-source fetch failure is already handled
+    # inline by _fetch_source (below) and surfaces as status="partial" —
+    # this try/except is for exceptions that escape that handling entirely
+    # (e.g. a DB write failure in persist_jobs, a bug in Pass 1/Pass 2). On
+    # such an exception the fetch_run row is marked status="error" (instead
+    # of being stuck at its initial status="ok" with completed_at=null) and
+    # the exception is re-raised so callers see it unchanged.
     # ------------------------------------------------------------------
-    source_errors: list[str] = []
+    try:
+        # ------------------------------------------------------------------
+        # Step 3: Fetch from both sources in parallel for all target titles
+        # ------------------------------------------------------------------
+        source_errors: list[str] = []
 
-    async def _fetch_source(
-        coros: list[Any], source_name: str
-    ) -> list[list[dict[str, object]]]:
-        """Run all per-title coroutines for one source; return empty on failure."""
-        try:
-            return list(await asyncio.gather(*coros))
-        except Exception as exc:  # noqa: BLE001
-            msg = f"{source_name} fetch failed: {exc}"
-            logger.warning(msg)
-            source_errors.append(msg)
-            return [[] for _ in coros]
+        async def _fetch_source(
+            coros: list[Any], source_name: str
+        ) -> list[list[dict[str, object]]]:
+            """Run all per-title coroutines for one source; return empty on failure."""
+            try:
+                return list(await asyncio.gather(*coros))
+            except Exception as exc:  # noqa: BLE001
+                msg = f"{source_name} fetch failed: {exc}"
+                logger.warning(msg)
+                source_errors.append(msg)
+                return [[] for _ in coros]
 
-    if titles:
-        adzuna_batches, jooble_batches = await asyncio.gather(
-            _fetch_source(
-                [adzuna.fetch_jobs(t, max_days_old) for t in titles], "Adzuna"
-            ),
-            _fetch_source([jooble.fetch_jobs(t) for t in titles], "Jooble"),
+        if titles:
+            adzuna_batches, jooble_batches = await asyncio.gather(
+                _fetch_source(
+                    [adzuna.fetch_jobs(t, max_days_old) for t in titles], "Adzuna"
+                ),
+                _fetch_source([jooble.fetch_jobs(t) for t in titles], "Jooble"),
+            )
+        else:
+            adzuna_batches = []
+            jooble_batches = []
+
+        # Flatten per-title results into a single list per source, logging per title
+        raw_adzuna: list[dict[str, object]] = []
+        for title, batch in zip(titles, adzuna_batches):
+            logger.info("Adzuna '%s': %d listings", title, len(batch))
+            raw_adzuna.extend(batch)
+
+        raw_jooble: list[dict[str, object]] = []
+        for title, batch in zip(titles, jooble_batches):
+            logger.info("Jooble '%s': %d listings", title, len(batch))
+            raw_jooble.extend(batch)
+
+        total_raw = len(raw_adzuna) + len(raw_jooble)
+        logger.info(
+            "Total retrieved: %d (Adzuna: %d, Jooble: %d)",
+            total_raw,
+            len(raw_adzuna),
+            len(raw_jooble),
         )
-    else:
-        adzuna_batches = []
-        jooble_batches = []
 
-    # Flatten per-title results into a single list per source, logging per title
-    raw_adzuna: list[dict[str, object]] = []
-    for title, batch in zip(titles, adzuna_batches):
-        logger.info("Adzuna '%s': %d listings", title, len(batch))
-        raw_adzuna.extend(batch)
+        # ------------------------------------------------------------------
+        # Step 4: Normalize
+        # ------------------------------------------------------------------
+        normalized: list[Job] = []
+        for raw in raw_adzuna:
+            normalized.append(normalize_adzuna(raw))
+        for raw in raw_jooble:
+            job = normalize_jooble(raw, max_days_old)
+            if job is not None:
+                normalized.append(job)
 
-    raw_jooble: list[dict[str, object]] = []
-    for title, batch in zip(titles, jooble_batches):
-        logger.info("Jooble '%s': %d listings", title, len(batch))
-        raw_jooble.extend(batch)
+        # ------------------------------------------------------------------
+        # Step 5: Persist (upsert / dedup)
+        # ------------------------------------------------------------------
+        persist_result = persist_jobs(normalized, db)
+        new_total: int = persist_result["new_total"]
+        updated_total: int = persist_result["updated_total"]
+        new_by_source: dict[str, int] = persist_result["new"]
+        updated_by_source: dict[str, int] = persist_result["updated"]
+        logger.info("Persisted: %d new, %d updated", new_total, updated_total)
 
-    total_raw = len(raw_adzuna) + len(raw_jooble)
-    logger.info(
-        "Total retrieved: %d (Adzuna: %d, Jooble: %d)",
-        total_raw,
-        len(raw_adzuna),
-        len(raw_jooble),
-    )
+        # ------------------------------------------------------------------
+        # Step 6: Pass 1 scoring (pure, no I/O)
+        # ------------------------------------------------------------------
+        scored: list[tuple[Job, dict[str, float]]] = [
+            (job, pass1.score(job, profile)) for job in normalized
+        ]
+        logger.info("Pass 1: %d jobs scored", len(scored))
 
-    # ------------------------------------------------------------------
-    # Step 4: Normalize
-    # ------------------------------------------------------------------
-    normalized: list[Job] = []
-    for raw in raw_adzuna:
-        normalized.append(normalize_adzuna(raw))
-    for raw in raw_jooble:
-        job = normalize_jooble(raw, max_days_old)
-        if job is not None:
-            normalized.append(job)
+        # ------------------------------------------------------------------
+        # Step 7: Pass 2 re-ranking (capped at 20 — cost-control invariant)
+        # ------------------------------------------------------------------
+        rerank_result = pass2.rerank(scored, profile, cap=20)
+        ranked = rerank_result.jobs
+        tokens_in = rerank_result.tokens_in
+        tokens_out = rerank_result.tokens_out
+        logger.info("Pass 2: %d jobs scored", len(ranked))
 
-    # ------------------------------------------------------------------
-    # Step 5: Persist (upsert / dedup)
-    # ------------------------------------------------------------------
-    persist_result = persist_jobs(normalized, db)
-    new_total: int = persist_result["new_total"]
-    updated_total: int = persist_result["updated_total"]
-    new_by_source: dict[str, int] = persist_result["new"]
-    updated_by_source: dict[str, int] = persist_result["updated"]
-    logger.info("Persisted: %d new, %d updated", new_total, updated_total)
+        # ------------------------------------------------------------------
+        # Step 8: Persist llm_score and llm_rationale back to DB
+        # ------------------------------------------------------------------
+        for ranked_job in ranked:
+            if ranked_job.llm_score is not None or ranked_job.llm_rationale is not None:
+                db.table("job").update(
+                    {
+                        "llm_score": ranked_job.llm_score,
+                        "llm_rationale": ranked_job.llm_rationale,
+                    }
+                ).eq("source", ranked_job.job.source).eq(
+                    "external_id", ranked_job.job.external_id
+                ).execute()
 
-    # ------------------------------------------------------------------
-    # Step 6: Pass 1 scoring (pure, no I/O)
-    # ------------------------------------------------------------------
-    scored: list[tuple[Job, dict[str, float]]] = [
-        (job, pass1.score(job, profile)) for job in normalized
-    ]
-    logger.info("Pass 1: %d jobs scored", len(scored))
+        elapsed = time.monotonic() - start_time
+        logger.info("Run complete in %.1fs", elapsed)
 
-    # ------------------------------------------------------------------
-    # Step 7: Pass 2 re-ranking (capped at 20 — cost-control invariant)
-    # ------------------------------------------------------------------
-    rerank_result = pass2.rerank(scored, profile, cap=20)
-    ranked = rerank_result.jobs
-    tokens_in = rerank_result.tokens_in
-    tokens_out = rerank_result.tokens_out
-    logger.info("Pass 2: %d jobs scored", len(ranked))
+        # ------------------------------------------------------------------
+        # Step 9: Update the fetch_run row with final stats
+        # ------------------------------------------------------------------
+        cost_usd = round((tokens_in * 0.15 + tokens_out * 0.60) / 1_000_000, 6)
+        any_pass2_failed = any(r.llm_score is None for r in ranked)
+        run_status = "partial" if (any_pass2_failed or source_errors) else "ok"
 
-    # ------------------------------------------------------------------
-    # Step 8: Persist llm_score and llm_rationale back to DB
-    # ------------------------------------------------------------------
-    for ranked_job in ranked:
-        if ranked_job.llm_score is not None or ranked_job.llm_rationale is not None:
-            db.table("job").update(
-                {
-                    "llm_score": ranked_job.llm_score,
-                    "llm_rationale": ranked_job.llm_rationale,
-                }
-            ).eq("source", ranked_job.job.source).eq(
-                "external_id", ranked_job.job.external_id
-            ).execute()
-
-    elapsed = time.monotonic() - start_time
-    logger.info("Run complete in %.1fs", elapsed)
-
-    # ------------------------------------------------------------------
-    # Step 9: Update the fetch_run row with final stats
-    # ------------------------------------------------------------------
-    cost_usd = round((tokens_in * 0.15 + tokens_out * 0.60) / 1_000_000, 6)
-    any_pass2_failed = any(r.llm_score is None for r in ranked)
-    run_status = "partial" if (any_pass2_failed or source_errors) else "ok"
-
-    # Build per-source stats for the jsonb column. Every source that was
-    # queried (i.e. a fetch was attempted because target_titles was
-    # non-empty) gets an entry — including sources that retrieved 0
-    # listings, produced 0 new/updated jobs, or whose fetch raised an
-    # exception (handled by _fetch_source, which substitutes empty batches
-    # on failure, so it naturally lands here as all-zero). When no fetch
-    # was attempted, source_stats stays empty.
-    source_stats: dict[str, dict[str, int]] = {}
-    if titles:
-        source_stats["adzuna"] = {
-            "retrieved": len(raw_adzuna),
-            "new": new_by_source.get("adzuna", 0),
-            "updated": updated_by_source.get("adzuna", 0),
-        }
-        source_stats["jooble"] = {
-            "retrieved": len(raw_jooble),
-            "new": new_by_source.get("jooble", 0),
-            "updated": updated_by_source.get("jooble", 0),
-        }
-
-    if run_id is not None:
-        db.table("fetch_run").update(
-            {
-                "completed_at": datetime.now(UTC).isoformat(),
-                "fetched_total": total_raw,
-                "new_jobs": new_total,
-                "updated_jobs": updated_total,
-                "scored_pass1": len(scored),
-                "scored_pass2": len(ranked),
-                "source_stats": source_stats,
-                "tokens_in": tokens_in,
-                "tokens_out": tokens_out,
-                "cost_usd": cost_usd,
-                "status": run_status,
-                "error_message": "; ".join(source_errors) if source_errors else None,
+        # Build per-source stats for the jsonb column. Every source that was
+        # queried (i.e. a fetch was attempted because target_titles was
+        # non-empty) gets an entry — including sources that retrieved 0
+        # listings, produced 0 new/updated jobs, or whose fetch raised an
+        # exception (handled by _fetch_source, which substitutes empty batches
+        # on failure, so it naturally lands here as all-zero). When no fetch
+        # was attempted, source_stats stays empty.
+        source_stats: dict[str, dict[str, int]] = {}
+        if titles:
+            source_stats["adzuna"] = {
+                "retrieved": len(raw_adzuna),
+                "new": new_by_source.get("adzuna", 0),
+                "updated": updated_by_source.get("adzuna", 0),
             }
-        ).eq("id", run_id).execute()
+            source_stats["jooble"] = {
+                "retrieved": len(raw_jooble),
+                "new": new_by_source.get("jooble", 0),
+                "updated": updated_by_source.get("jooble", 0),
+            }
 
-    return {
-        "fetched": total_raw,
-        "fetched_by_source": {"adzuna": len(raw_adzuna), "jooble": len(raw_jooble)},
-        "window_days": max_days_old,
-        "new": new_total,
-        "updated": updated_total,
-        "scored": len(ranked),
-        "tokens_in": tokens_in,
-        "tokens_out": tokens_out,
-        "cost_usd": cost_usd,
-    }
+        if run_id is not None:
+            db.table("fetch_run").update(
+                {
+                    "completed_at": datetime.now(UTC).isoformat(),
+                    "fetched_total": total_raw,
+                    "new_jobs": new_total,
+                    "updated_jobs": updated_total,
+                    "scored_pass1": len(scored),
+                    "scored_pass2": len(ranked),
+                    "source_stats": source_stats,
+                    "tokens_in": tokens_in,
+                    "tokens_out": tokens_out,
+                    "cost_usd": cost_usd,
+                    "status": run_status,
+                    "error_message": "; ".join(source_errors) if source_errors else None,
+                }
+            ).eq("id", run_id).execute()
+
+        return {
+            "fetched": total_raw,
+            "fetched_by_source": {"adzuna": len(raw_adzuna), "jooble": len(raw_jooble)},
+            "window_days": max_days_old,
+            "new": new_total,
+            "updated": updated_total,
+            "scored": len(ranked),
+            "tokens_in": tokens_in,
+            "tokens_out": tokens_out,
+            "cost_usd": cost_usd,
+        }
+    except Exception as exc:
+        logger.exception("Pipeline run failed (run_id=%s)", run_id)
+        if run_id is not None:
+            db.table("fetch_run").update(
+                {
+                    "status": "error",
+                    "completed_at": datetime.now(UTC).isoformat(),
+                    "error_message": str(exc),
+                }
+            ).eq("id", run_id).execute()
+        raise
