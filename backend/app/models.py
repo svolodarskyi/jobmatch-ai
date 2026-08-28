@@ -120,6 +120,20 @@ class FetchRunOut(BaseModel):
     updated_jobs: int | None = None
     scored_pass1: int | None = None
     scored_pass2: int | None = None
+    # Per-source stats keyed by source name (e.g. "adzuna", "jooble").
+    # Each value has the fixed shape {"retrieved": int, "new": int, "updated": int}:
+    #   - retrieved: raw listing count returned by that source before
+    #     normalization/dedup, independent of how many turned out new,
+    #     updated, or duplicate.
+    #   - new: number of listings from that source newly inserted.
+    #   - updated: number of listings from that source that updated an
+    #     existing row.
+    # Every source that was queried (profile.target_titles non-empty) gets
+    # an entry, even if it retrieved 0 listings, produced 0 new/updated
+    # jobs, or its fetch raised an exception (in which case its entry is
+    # {"retrieved": 0, "new": 0, "updated": 0}). When no fetch was
+    # attempted, this dict is empty. Typed as dict[str, object] rather than
+    # a nested model to keep the jsonb column's shape flexible.
     source_stats: dict[str, object] = {}
     tokens_in: int | None = None
     tokens_out: int | None = None

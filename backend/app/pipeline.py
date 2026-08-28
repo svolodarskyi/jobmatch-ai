@@ -269,12 +269,24 @@ async def run(profile: Profile, db: Client) -> dict[str, object]:
     any_pass2_failed = any(r.llm_score is None for r in ranked)
     run_status = "partial" if (any_pass2_failed or source_errors) else "ok"
 
-    # Build per-source stats for the jsonb column.
+    # Build per-source stats for the jsonb column. Every source that was
+    # queried (i.e. a fetch was attempted because target_titles was
+    # non-empty) gets an entry — including sources that retrieved 0
+    # listings, produced 0 new/updated jobs, or whose fetch raised an
+    # exception (handled by _fetch_source, which substitutes empty batches
+    # on failure, so it naturally lands here as all-zero). When no fetch
+    # was attempted, source_stats stays empty.
     source_stats: dict[str, dict[str, int]] = {}
-    for src in set(list(new_by_source.keys()) + list(updated_by_source.keys())):
-        source_stats[src] = {
-            "new": new_by_source.get(src, 0),
-            "updated": updated_by_source.get(src, 0),
+    if titles:
+        source_stats["adzuna"] = {
+            "retrieved": len(raw_adzuna),
+            "new": new_by_source.get("adzuna", 0),
+            "updated": updated_by_source.get("adzuna", 0),
+        }
+        source_stats["jooble"] = {
+            "retrieved": len(raw_jooble),
+            "new": new_by_source.get("jooble", 0),
+            "updated": updated_by_source.get("jooble", 0),
         }
 
     if run_id is not None:

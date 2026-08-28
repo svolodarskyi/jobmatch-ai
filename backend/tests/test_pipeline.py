@@ -474,3 +474,170 @@ def test_pipeline_run_writes_fetch_run_row() -> None:
     assert result["tokens_out"] == 30
     expected_cost = round((150 * 0.15 + 30 * 0.60) / 1_000_000, 6)
     assert result["cost_usd"] == expected_cost
+
+
+# ---------------------------------------------------------------------------
+# source_stats shape — issue #42
+#
+# In all three tests below, ranked jobs are built with llm_score=None so
+# that step 8 never issues a "job" table .update() call. That leaves the
+# mocked chain's .update() call list containing exactly one call: the final
+# fetch_run stats update, whose first positional arg is the update payload
+# dict passed to db.table("fetch_run").update(...).
+# ---------------------------------------------------------------------------
+
+
+def _get_source_stats(mock_db: MagicMock) -> dict[str, object]:
+    """Extract source_stats from the fetch_run update payload captured on the
+    shared mock chain (see _make_mock_db — every db.table(...) call returns
+    the same chain object, so .update() calls from any table land here).
+    """
+    chain = mock_db.table.return_value
+    for call in chain.update.call_args_list:
+        payload = call.args[0]
+        if "source_stats" in payload:
+            return payload["source_stats"]
+    raise AssertionError("no fetch_run update call with source_stats found")
+
+
+def test_pipeline_source_stats_includes_zero_activity_source() -> None:
+    """A source with retrieved > 0 but 0 new/0 updated still appears in
+    source_stats (e.g. every raw listing was filtered out during
+    normalization, so persist_jobs never saw it).
+    """
+    job_a = _make_job("adzuna", "a1")
+    ranked_jobs = [_make_ranked_job(job_a, llm_score=None)]
+    rerank_result = RerankResult(jobs=ranked_jobs, tokens_in=0, tokens_out=0)
+    mock_db = _make_mock_db(existing_job_count=1)
+
+    persist_result = {
+        "new_total": 1,
+        "updated_total": 0,
+        "new": {"adzuna": 1},
+        "updated": {},
+    }
+
+    with (
+        patch("app.pipeline.adzuna.fetch_jobs", new=AsyncMock(return_value=[{"id": "a1"}])),
+        patch(
+            "app.pipeline.jooble.fetch_jobs",
+            new=AsyncMock(return_value=[{"id": "j1"}, {"id": "j2"}]),
+        ),
+        patch("app.pipeline.normalize_adzuna", return_value=job_a),
+        # Every raw Jooble listing is filtered out (e.g. too old) — retrieved
+        # is still 2, but nothing makes it into the normalized/persisted list.
+        patch("app.pipeline.normalize_jooble", return_value=None),
+        patch("app.pipeline.persist_jobs", return_value=persist_result),
+        patch("app.pipeline.pass1.score", return_value={"score": 72.0}),
+        patch("app.pipeline.pass2.rerank", return_value=rerank_result),
+    ):
+        from app.pipeline import run
+
+        asyncio.run(run(_SAMPLE_PROFILE, mock_db))
+
+    source_stats = _get_source_stats(mock_db)
+    assert source_stats["jooble"] == {"retrieved": 2, "new": 0, "updated": 0}
+    assert source_stats["adzuna"] == {"retrieved": 1, "new": 1, "updated": 0}
+
+
+def test_pipeline_source_stats_includes_failed_source() -> None:
+    """A source whose fetch raises still appears in source_stats as all-zero,
+    rather than being omitted (exercises _fetch_source's except branch).
+    """
+    job_a = _make_job("adzuna", "a1")
+    ranked_jobs = [_make_ranked_job(job_a, llm_score=None)]
+    rerank_result = RerankResult(jobs=ranked_jobs, tokens_in=0, tokens_out=0)
+    mock_db = _make_mock_db(existing_job_count=1)
+
+    persist_result = {
+        "new_total": 1,
+        "updated_total": 0,
+        "new": {"adzuna": 1},
+        "updated": {},
+    }
+
+    with (
+        patch("app.pipeline.adzuna.fetch_jobs", new=AsyncMock(return_value=[{"id": "a1"}])),
+        patch(
+            "app.pipeline.jooble.fetch_jobs",
+            new=AsyncMock(side_effect=RuntimeError("jooble is down")),
+        ),
+        patch("app.pipeline.normalize_adzuna", return_value=job_a),
+        patch("app.pipeline.persist_jobs", return_value=persist_result),
+        patch("app.pipeline.pass1.score", return_value={"score": 72.0}),
+        patch("app.pipeline.pass2.rerank", return_value=rerank_result),
+    ):
+        from app.pipeline import run
+
+        asyncio.run(run(_SAMPLE_PROFILE, mock_db))
+
+    source_stats = _get_source_stats(mock_db)
+    assert source_stats["jooble"] == {"retrieved": 0, "new": 0, "updated": 0}
+    assert source_stats["adzuna"] == {"retrieved": 1, "new": 1, "updated": 0}
+
+
+def test_pipeline_source_stats_retrieved_differs_from_new_on_dupes() -> None:
+    """retrieved counts raw listings before dedup, so it can exceed new+updated
+    when some retrieved listings are already-known duplicates that get
+    dropped entirely (only some become 'updated' rows).
+    """
+    job_a = _make_job("adzuna", "a1")
+    ranked_jobs = [_make_ranked_job(job_a, llm_score=None)]
+    rerank_result = RerankResult(jobs=ranked_jobs, tokens_in=0, tokens_out=0)
+    mock_db = _make_mock_db(existing_job_count=1)
+
+    # 5 raw listings retrieved from Adzuna; persist_jobs reports 2 new + 3
+    # updated (retrieved > new, and retrieved != new).
+    persist_result = {
+        "new_total": 2,
+        "updated_total": 3,
+        "new": {"adzuna": 2},
+        "updated": {"adzuna": 3},
+    }
+
+    with (
+        patch(
+            "app.pipeline.adzuna.fetch_jobs",
+            new=AsyncMock(
+                return_value=[{"id": f"a{i}"} for i in range(5)],
+            ),
+        ),
+        patch("app.pipeline.jooble.fetch_jobs", new=AsyncMock(return_value=[])),
+        patch("app.pipeline.normalize_adzuna", return_value=job_a),
+        patch("app.pipeline.persist_jobs", return_value=persist_result),
+        patch("app.pipeline.pass1.score", return_value={"score": 72.0}),
+        patch("app.pipeline.pass2.rerank", return_value=rerank_result),
+    ):
+        from app.pipeline import run
+
+        asyncio.run(run(_SAMPLE_PROFILE, mock_db))
+
+    source_stats = _get_source_stats(mock_db)
+    assert source_stats["adzuna"] == {"retrieved": 5, "new": 2, "updated": 3}
+    assert source_stats["adzuna"]["retrieved"] != source_stats["adzuna"]["new"]
+
+
+def test_pipeline_source_stats_empty_when_no_titles() -> None:
+    """When profile.target_titles is empty, no fetch is attempted and
+    source_stats stays {} — no synthetic entries for unqueried sources.
+    """
+    empty_profile = Profile(
+        target_titles=[],
+        skills=["Python"],
+        seniority="mid",
+        locations=["Toronto"],
+    )
+    rerank_result = RerankResult(jobs=[], tokens_in=0, tokens_out=0)
+    mock_db = _make_mock_db(existing_job_count=1)
+
+    with (
+        patch("app.pipeline.persist_jobs", return_value=_PERSIST_RESULT_1),
+        patch("app.pipeline.pass1.score", return_value={"score": 72.0}),
+        patch("app.pipeline.pass2.rerank", return_value=rerank_result),
+    ):
+        from app.pipeline import run
+
+        asyncio.run(run(empty_profile, mock_db))
+
+    source_stats = _get_source_stats(mock_db)
+    assert source_stats == {}
