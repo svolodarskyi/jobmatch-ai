@@ -261,6 +261,33 @@ Replaces the notes for a job.
 
 **Response 404** — job not found.
 
+### `PATCH /jobs/{id}/fits_me`
+
+Sets the `fits_me` flag for a job — a manual, user-set annotation independent of application-status tracking.
+
+**Request body**
+
+```json
+{ "fits_me": true }
+```
+
+`fits_me` is a required bool.
+
+**Response 200**
+
+```json
+{
+  "job_id": "uuid",
+  "fits_me": true
+}
+```
+
+Note: unlike `.../status` and `.../notes`, this response has **no `updated_at` field**. This endpoint writes directly to the `job` table, not `application_status` — there is no shared "updated at" timestamp to report.
+
+**Response 404** — job not found.
+
+**Response 422** — request body missing `fits_me` or `fits_me` not a boolean.
+
 ---
 
 ## Errors
