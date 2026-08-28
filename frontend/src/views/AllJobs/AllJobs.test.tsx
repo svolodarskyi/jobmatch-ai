@@ -323,6 +323,46 @@ describe('AllJobs', () => {
     expect(screen.getByTestId('fits-me-filter-button')).toHaveAttribute('aria-pressed', 'false')
   })
 
+  it('renders status_history from the initial GET /jobs/ fetch, with no status-change PATCH in this session', async () => {
+    const jobWithHistory = job({
+      id: '1',
+      title: 'Data Engineer',
+      status: 'Applied',
+      status_history: [
+        { status: 'New', changed_at: '2026-08-01T10:00:00Z' },
+        { status: 'Saved', changed_at: '2026-08-05T10:00:00Z' },
+        { status: 'Applied', changed_at: '2026-08-10T10:00:00Z' },
+      ],
+    })
+    // Fail loudly if the test accidentally relies on a status PATCH to
+    // populate history — the acceptance criterion is that history comes
+    // from the initial GET /jobs/ fetch alone.
+    server.use(
+      http.patch('http://localhost:8000/jobs/:id/status', () => {
+        throw new Error('status PATCH should not be called in this test')
+      }),
+    )
+    mockJobsList([jobWithHistory])
+    const user = userEvent.setup()
+    render(<AllJobs />)
+
+    await screen.findByText('Data Engineer')
+
+    // Collapsed by default — expand it.
+    const toggle = screen.getByRole('button', { name: /status history/i })
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    await user.click(toggle)
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+
+    // All three historical entries are visible, oldest first — proving the
+    // full history rendered straight from the initial fetch's response.
+    expect(screen.getByText('New')).toBeInTheDocument()
+    expect(screen.getByText('Saved')).toBeInTheDocument()
+    // 'Applied' appears both as the current-status badge and as a history
+    // entry (job's current status matches its most recent history entry).
+    expect(screen.getAllByText('Applied').length).toBe(2)
+  })
+
   it('Fits Me star fires the fits_me PATCH and reverts on a mocked failure', async () => {
     mockJobsList([mixedJobs[0]])
     server.use(
