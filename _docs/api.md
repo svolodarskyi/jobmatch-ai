@@ -199,7 +199,10 @@ Every source that was queried (i.e. `profile.target_titles` is non-empty) gets a
 - `"partial"` — a source fetch failed or a Pass 2 rerank failed, but the pipeline otherwise completed (non-fatal).
 - `"error"` — an unhandled exception escaped the pipeline.
 
-**`error_message`:** `null` when `status` is `"ok"`; a `"; "`-joined summary of per-source failure messages when `status` is `"partial"`; `str(exception)` when `status` is `"error"`.
+**`error_message`:** `null` when `status` is `"ok"`; `str(exception)` when `status` is `"error"`. When `status` is `"partial"`, `error_message` depends on *why* it's partial — a `"partial"` run can be caused by a source-fetch failure, a Pass 2 (OpenAI) scoring failure, or both, and only the first populates `error_message`:
+
+- Source-fetch failure (one or more sources raised during fetch): `error_message` is a `"; "`-joined summary of the per-source failure messages.
+- Pass 2 scoring failure only (an OpenAI re-rank call failed for one of the capped top jobs, with no source-fetch failures): `error_message` is `null`. The failure is recorded only on the affected job row (`llm_score: null`, `llm_rationale: null`) — the fetch-run row itself carries no message for this case. So `status: "partial"` with `error_message: null` does not necessarily mean the run "still succeeded"; it can mean a Pass 2 failure occurred and left no trace here.
 
 **In-progress caveat:** a `fetch_run` row is inserted with `status: "ok"` and `completed_at: null` before the run finishes, and only updated to its final `status`/`completed_at` once the pipeline completes. This means `"ok"` with `completed_at: null` currently means the run is **still running**, not that it succeeded — it is indistinguishable from a genuinely completed `"ok"` run except by the `null` `completed_at`. This ambiguity is tracked for a fix in #50; the behavior described here is current, pre-#50 behavior.
 
