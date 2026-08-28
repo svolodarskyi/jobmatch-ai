@@ -63,12 +63,15 @@ Returns jobs ordered by score (descending). All query params are optional.
 
 | Param | Type | Default | Description |
 |---|---|---|---|
-| `min_score` | int (0–100) | `0` | Exclude jobs with `raw_score` below this |
+| `min_score` | int (0–100) | `0` | Only include jobs with `raw_score >= min_score`. See note below on the `0` default. |
 | `source` | `adzuna` \| `jooble` | — | Filter to one source |
 | `status` | string | — | Filter by application status |
 | `since` | ISO date | — | Only jobs fetched on or after this date |
+| `fits_me` | bool | — | Filter to jobs with this fits_me value |
 | `limit` | int | `50` | Max results |
 | `offset` | int | `0` | Pagination offset |
+
+`min_score=0` — the default, and indistinguishable from omitting the param entirely — applies **no** `raw_score` filter, so unscored jobs (`raw_score IS NULL`) are included alongside scored ones. Any `min_score > 0` applies a plain `raw_score >= min_score` filter, which (per Postgres NULL comparison semantics) naturally excludes `raw_score IS NULL` rows.
 
 **Response 200**
 
@@ -91,6 +94,7 @@ Returns jobs ordered by score (descending). All query params are optional.
       "llm_rationale": "Strong skills match on Azure and Databricks. They want 5+ yrs leadership; your profile shows 2 — worth addressing in a cover letter.",
       "status": "New",
       "notes": "",
+      "fits_me": false,
       "status_history": [
         { "status": "New", "changed_at": "2026-08-24T09:00:00Z" }
       ]
@@ -106,28 +110,22 @@ Returns jobs ordered by score (descending). All query params are optional.
 
 ### `POST /fetch`
 
-Triggers an on-demand fetch pipeline run (same logic as the daily scheduler).
+Kicks off the fetch pipeline as a background task and returns immediately (same logic as the daily scheduler). The request handler only validates that a profile exists and enqueues the run — it does not wait for the pipeline to finish.
 
 **Request body** — empty `{}` or omitted.
 
-**Response 200**
+**Response 202**
 
 ```json
-{
-  "fetched": 48,
-  "new": 12,
-  "updated": 3,
-  "scored_pass1": 48,
-  "scored_pass2": 15
-}
+{ "status": "started" }
 ```
 
-`new` = listings not previously seen; `updated` = existing rows where metadata changed (title, salary, etc.).
+Poll `GET /fetch-runs?limit=1` to track progress of the run (fetched/new/updated counts, scoring counts, and completion status are recorded there, not in this response).
 
-**Response 503** — if a fetch is already in progress.
+**Response 404** — no profile has been saved yet.
 
 ```json
-{ "detail": "A fetch is already running." }
+{ "detail": "Profile not found — save a profile before fetching" }
 ```
 
 ---
