@@ -8,7 +8,7 @@ import Dashboard from '../../views/Dashboard/Dashboard'
 const defaultFilters: Filters = { ...DEFAULT_FILTERS }
 
 describe('FiltersBar', () => {
-  it('renders all 4 controls', () => {
+  it('renders all 5 controls', () => {
     const onFilterChange = vi.fn()
     render(<FiltersBar filters={defaultFilters} onFilterChange={onFilterChange} />)
 
@@ -21,6 +21,100 @@ describe('FiltersBar', () => {
     expect(screen.getByRole('checkbox', { name: /applied/i })).toBeInTheDocument()
     // Date fetched select
     expect(screen.getByRole('combobox', { name: /date fetched/i })).toBeInTheDocument()
+    // Fits Me checkbox
+    expect(screen.getByRole('checkbox', { name: /★ fits me/i })).toBeInTheDocument()
+  })
+
+  it('Fits Me checkbox reflects filters.fits_me and toggles it', () => {
+    const onFilterChange = vi.fn()
+    render(<FiltersBar filters={defaultFilters} onFilterChange={onFilterChange} />)
+
+    const fitsMeCheckbox = screen.getByRole('checkbox', { name: /★ fits me/i })
+    expect(fitsMeCheckbox).not.toBeChecked()
+
+    fireEvent.click(fitsMeCheckbox)
+
+    expect(onFilterChange).toHaveBeenCalledWith(
+      expect.objectContaining({ fits_me: true }),
+    )
+  })
+
+  it('unchecking Fits Me sets it back to false', () => {
+    const onFilterChange = vi.fn()
+    const filtersWithFitsMe: Filters = { ...DEFAULT_FILTERS, fits_me: true }
+    render(<FiltersBar filters={filtersWithFitsMe} onFilterChange={onFilterChange} />)
+
+    const fitsMeCheckbox = screen.getByRole('checkbox', { name: /★ fits me/i })
+    expect(fitsMeCheckbox).toBeChecked()
+
+    fireEvent.click(fitsMeCheckbox)
+
+    expect(onFilterChange).toHaveBeenCalledWith(
+      expect.objectContaining({ fits_me: false }),
+    )
+  })
+
+  it('checking Fits Me issues GET /jobs/ with fits_me=true', async () => {
+    const user = userEvent.setup()
+
+    let capturedUrl = ''
+    server.use(
+      http.get('http://localhost:8000/jobs/', ({ request }) => {
+        capturedUrl = request.url
+        return HttpResponse.json({ total: 0, jobs: [] })
+      }),
+    )
+
+    render(<Dashboard />)
+    await waitFor(() => expect(screen.queryByTestId('loading-skeletons')).not.toBeInTheDocument())
+
+    const fitsMeCheckbox = screen.getByRole('checkbox', { name: /★ fits me/i })
+    await user.click(fitsMeCheckbox)
+
+    await waitFor(() => {
+      expect(capturedUrl).toContain('fits_me=true')
+    })
+  })
+
+  it('omits fits_me from the query string when unchecked', async () => {
+    let capturedUrl = ''
+    server.use(
+      http.get('http://localhost:8000/jobs/', ({ request }) => {
+        capturedUrl = request.url
+        return HttpResponse.json({ total: 0, jobs: [] })
+      }),
+    )
+
+    render(<Dashboard />)
+    await waitFor(() => expect(screen.queryByTestId('loading-skeletons')).not.toBeInTheDocument())
+
+    expect(capturedUrl).not.toContain('fits_me=')
+  })
+
+  it('combines fits_me with other active filters via AND in the query string', async () => {
+    const user = userEvent.setup()
+
+    let capturedUrl = ''
+    server.use(
+      http.get('http://localhost:8000/jobs/', ({ request }) => {
+        capturedUrl = request.url
+        return HttpResponse.json({ total: 0, jobs: [] })
+      }),
+    )
+
+    render(<Dashboard />)
+    await waitFor(() => expect(screen.queryByTestId('loading-skeletons')).not.toBeInTheDocument())
+
+    const slider = screen.getByRole('slider', { name: /score threshold/i })
+    fireEvent.change(slider, { target: { value: '70' } })
+
+    const fitsMeCheckbox = screen.getByRole('checkbox', { name: /★ fits me/i })
+    await user.click(fitsMeCheckbox)
+
+    await waitFor(() => {
+      expect(capturedUrl).toContain('min_score=70')
+      expect(capturedUrl).toContain('fits_me=true')
+    })
   })
 
   it('changing score slider calls onFilterChange with correct min_score param', () => {
@@ -137,13 +231,21 @@ describe('FiltersBar', () => {
     render(<Dashboard />)
     await waitFor(() => expect(screen.queryByTestId('loading-skeletons')).not.toBeInTheDocument())
 
-    // Select a source to change state
+    // Select a source and Fits Me to change state
     const adzunaCheckbox = screen.getByRole('checkbox', { name: /^adzuna$/i })
     await user.click(adzunaCheckbox)
 
     await waitFor(() => {
       expect(capturedUrl).toContain('source=adzuna')
     })
+
+    const fitsMeCheckbox = screen.getByRole('checkbox', { name: /★ fits me/i })
+    await user.click(fitsMeCheckbox)
+
+    await waitFor(() => {
+      expect(capturedUrl).toContain('fits_me=true')
+    })
+    expect(fitsMeCheckbox).toBeChecked()
 
     // Click reset
     const resetBtn = screen.getByRole('button', { name: /reset filters/i })
@@ -154,6 +256,8 @@ describe('FiltersBar', () => {
       expect(capturedUrl).not.toContain('min_score=')
       expect(capturedUrl).not.toContain('status=')
       expect(capturedUrl).not.toContain('since=')
+      expect(capturedUrl).not.toContain('fits_me=')
     })
+    expect(screen.getByRole('checkbox', { name: /★ fits me/i })).not.toBeChecked()
   })
 })

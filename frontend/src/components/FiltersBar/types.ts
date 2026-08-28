@@ -3,6 +3,7 @@ export interface Filters {
   source: string | null
   status: string | null
   since: string | null
+  fits_me: boolean
 }
 
 export const DEFAULT_FILTERS: Filters = {
@@ -10,4 +11,5 @@ export const DEFAULT_FILTERS: Filters = {
   source: null,
   status: null,
   since: null,
+  fits_me: false,
 }

@@ -79,6 +79,10 @@ export default function FiltersBar({ filters, onFilterChange }: FiltersBarProps)
     onFilterChange({ ...filters, since: dateOptionToSince(option) })
   }
 
+  function handleFitsMeChange(e: React.ChangeEvent<HTMLInputElement>) {
+    onFilterChange({ ...filters, fits_me: e.target.checked })
+  }
+
   function handleReset() {
     onFilterChange({ ...DEFAULT_FILTERS })
   }
@@ -181,6 +185,21 @@ export default function FiltersBar({ filters, onFilterChange }: FiltersBarProps)
               </option>
             ))}
           </select>
+        </section>
+
+        {/* ── Fits Me ──────────────────────────────────────────────────── */}
+        <section>
+          <SectionLabel>Fits Me</SectionLabel>
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={filters.fits_me}
+              onChange={handleFitsMeChange}
+              className="accent-blue-500"
+              aria-label="★ Fits Me"
+            />
+            <span className="text-sm text-slate-100">★ Fits Me</span>
+          </label>
         </section>
       </div>
 

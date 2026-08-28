@@ -92,6 +92,7 @@ Vertical sidebar, sticky. Controls in order:
 2. Source — checkbox group: Adzuna, Jooble, (All)
 3. Status — checkbox group: New, Saved, Applied, Interviewing, Rejected, Offer, (All)
 4. Date fetched — select: Today, Last 7 days, Last 30 days, All time
+5. Fits Me — single checkbox ("★ Fits Me"), unchecked by default; maps to server-side `fits_me=true` query param (omitted when unchecked)
 
 "Reset filters" link at the bottom resets all to defaults.
 

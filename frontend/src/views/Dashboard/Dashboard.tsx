@@ -36,6 +36,7 @@ function buildJobsUrl(filters: Filters): string {
   if (filters.source) params.set('source', filters.source)
   if (filters.status) params.set('status', filters.status)
   if (filters.since) params.set('since', filters.since)
+  if (filters.fits_me) params.set('fits_me', 'true')
   const qs = params.toString()
   return `${API_BASE}/jobs/${qs ? `?${qs}` : ''}`
 }
@@ -78,6 +79,10 @@ export default function Dashboard() {
 
   function handleNotesChange(id: string, notes: string) {
     setJobs((prev) => prev.map((j) => (j.id === id ? { ...j, notes } : j)))
+  }
+
+  function handleFitsMeToggle(id: string, next: boolean) {
+    setJobs((prev) => prev.map((j) => (j.id === id ? { ...j, fits_me: next } : j)))
   }
 
   return (
@@ -140,6 +145,7 @@ export default function Dashboard() {
                       job={job}
                       onStatusChange={handleStatusChange}
                       onNotesChange={handleNotesChange}
+                      onFitsMeToggle={handleFitsMeToggle}
                     />
                   ))}
                 </div>
