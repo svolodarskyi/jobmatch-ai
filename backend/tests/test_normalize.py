@@ -5,6 +5,8 @@ Payloads are minimal inline dicts that mirror the structure of real API
 responses from Adzuna and Jooble.
 """
 
+from datetime import UTC, datetime
+
 from app.sources.normalize import Job, normalize_adzuna, normalize_jooble
 
 # ---------------------------------------------------------------------------
@@ -20,11 +22,12 @@ ADZUNA_FULL = {
     "salary_max": 120000.0,
     "description": "Build and maintain data pipelines.",
     "redirect_url": "https://adzuna.ca/jobs/az-123",
+    "created": "2026-08-20T10:00:00Z",
 }
 
 
 def test_normalize_adzuna_full_payload():
-    """Happy path: all nine canonical fields are populated."""
+    """Happy path: all canonical fields are populated, including date_posted."""
     job = normalize_adzuna(ADZUNA_FULL)
 
     assert isinstance(job, Job)
@@ -37,6 +40,35 @@ def test_normalize_adzuna_full_payload():
     assert job.salary_max == 120000
     assert job.description == "Build and maintain data pipelines."
     assert job.url == "https://adzuna.ca/jobs/az-123"
+    assert job.date_posted == datetime(2026, 8, 20, 10, 0, 0, tzinfo=UTC)
+
+
+def test_normalize_adzuna_date_posted_absent_when_created_missing():
+    """Partial payload: 'created' key absent → date_posted is None."""
+    raw = {**ADZUNA_FULL}
+    raw.pop("created", None)
+
+    job = normalize_adzuna(raw)
+
+    assert job.date_posted is None
+
+
+def test_normalize_adzuna_date_posted_none_when_created_unparseable():
+    """'created' present but not a valid ISO-8601 string → date_posted is None."""
+    raw = {**ADZUNA_FULL, "created": "not-a-date"}
+
+    job = normalize_adzuna(raw)
+
+    assert job.date_posted is None
+
+
+def test_normalize_adzuna_date_posted_naive_datetime_becomes_utc():
+    """A 'created' value with no timezone offset is assumed UTC."""
+    raw = {**ADZUNA_FULL, "created": "2026-08-20T10:00:00"}
+
+    job = normalize_adzuna(raw)
+
+    assert job.date_posted == datetime(2026, 8, 20, 10, 0, 0, tzinfo=UTC)
 
 
 def test_normalize_adzuna_salary_absent():
@@ -104,11 +136,12 @@ JOOBLE_FULL = {
     "salary": "95000",
     "snippet": "Work on distributed systems at scale.",
     "link": "https://jooble.org/jobs/jb-456",
+    "updated": "2026-08-20T10:00:00.0000000",
 }
 
 
 def test_normalize_jooble_full_payload():
-    """Happy path: all nine canonical fields are populated."""
+    """Happy path: all canonical fields are populated, including date_posted."""
     job = normalize_jooble(JOOBLE_FULL)
 
     assert isinstance(job, Job)
@@ -121,6 +154,78 @@ def test_normalize_jooble_full_payload():
     assert job.salary_max is None  # Jooble has no salary_max
     assert job.description == "Work on distributed systems at scale."
     assert job.url == "https://jooble.org/jobs/jb-456"
+    assert job.date_posted == datetime(2026, 8, 20, 10, 0, 0, tzinfo=UTC)
+
+
+# ---------------------------------------------------------------------------
+# Jooble — date_posted (issue #52)
+# ---------------------------------------------------------------------------
+
+
+def test_normalize_jooble_date_posted_absent_when_updated_missing():
+    """Partial payload: 'updated' key absent → date_posted is None."""
+    raw = {**JOOBLE_FULL}
+    raw.pop("updated", None)
+
+    job = normalize_jooble(raw)
+
+    assert job is not None
+    assert job.date_posted is None
+
+
+def test_normalize_jooble_date_posted_none_when_updated_unparseable():
+    """'updated' present but unparseable → date_posted is None (no exception)."""
+    raw = {**JOOBLE_FULL, "updated": "not-a-date"}
+
+    job = normalize_jooble(raw)
+
+    assert job is not None
+    assert job.date_posted is None
+
+
+def test_normalize_jooble_date_posted_populated_without_age_filter():
+    """date_posted is populated even when max_days_old is not provided (no
+    filtering requested), since parsing is independent of the age filter."""
+    job = normalize_jooble(JOOBLE_FULL, max_days_old=None)
+
+    assert job is not None
+    assert job.date_posted == datetime(2026, 8, 20, 10, 0, 0, tzinfo=UTC)
+
+
+def test_normalize_jooble_age_filter_still_drops_stale_listings():
+    """The existing max_days_old age filter still drops listings older than
+    the window — unchanged by the date_posted addition."""
+    old_raw = {**JOOBLE_FULL, "updated": "2020-01-01T10:00:00.0000000"}
+
+    job = normalize_jooble(old_raw, max_days_old=30)
+
+    assert job is None
+
+
+def test_normalize_jooble_age_filter_keeps_recent_listings():
+    """A recent 'updated' timestamp within the window is not filtered out,
+    and date_posted is populated on the returned Job."""
+    from datetime import timedelta
+
+    recent = (datetime.now(UTC) - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%S.0000000")
+    raw = {**JOOBLE_FULL, "updated": recent}
+
+    job = normalize_jooble(raw, max_days_old=30)
+
+    assert job is not None
+    assert job.date_posted is not None
+
+
+def test_normalize_jooble_age_filter_unaffected_by_unparseable_updated():
+    """An unparseable 'updated' field does not trigger the age filter (matches
+    pre-existing behavior: only a successfully-parsed, too-old timestamp is
+    dropped) — the listing is still returned, with date_posted=None."""
+    raw = {**JOOBLE_FULL, "updated": "not-a-date"}
+
+    job = normalize_jooble(raw, max_days_old=30)
+
+    assert job is not None
+    assert job.date_posted is None
 
 
 def test_normalize_jooble_snippet_absent():

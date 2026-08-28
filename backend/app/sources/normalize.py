@@ -25,6 +25,24 @@ class Job:
     salary_max: int | None
     description: str | None
     url: str | None
+    date_posted: datetime | None = None
+
+
+def _parse_adzuna_created(raw: Any) -> datetime | None:
+    """Parse Adzuna's ``created`` field into a timezone-aware ``datetime``.
+
+    Adzuna returns ISO 8601 timestamps (e.g. ``"2024-01-15T10:00:00Z"``).
+    Returns ``None`` if *raw* is ``None`` or unparseable.
+    """
+    if raw is None:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(raw))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt
 
 
 def normalize_adzuna(raw: dict[str, Any]) -> Job:
@@ -53,7 +71,33 @@ def normalize_adzuna(raw: dict[str, Any]) -> Job:
         salary_max=int(salary_max_raw) if salary_max_raw is not None else None,
         description=raw.get("description"),
         url=raw.get("redirect_url"),
+        date_posted=_parse_adzuna_created(raw.get("created")),
     )
+
+
+def _parse_jooble_updated(raw: Any) -> datetime | None:
+    """Parse Jooble's ``updated`` field into a timezone-aware ``datetime``.
+
+    Jooble returns timestamps like ``"2024-01-15T10:00:00.0000000"`` — strip
+    sub-second precision beyond 6 digits before calling
+    ``datetime.fromisoformat``. Returns ``None`` if *raw* is ``None`` or
+    unparseable.
+    """
+    if raw is None:
+        return None
+    try:
+        updated_str = str(raw)
+        # Remove trailing fractional seconds beyond microseconds
+        if "." in updated_str:
+            base, frac = updated_str.split(".", 1)
+            frac = frac[:6]
+            updated_str = f"{base}.{frac}"
+        updated_dt = datetime.fromisoformat(updated_str)
+    except (ValueError, TypeError):
+        return None
+    if updated_dt.tzinfo is None:
+        updated_dt = updated_dt.replace(tzinfo=UTC)
+    return updated_dt
 
 
 def normalize_jooble(raw: dict[str, Any], max_days_old: int | None = None) -> Job | None:
@@ -78,39 +122,29 @@ def normalize_jooble(raw: dict[str, Any], max_days_old: int | None = None) -> Jo
         A populated ``Job`` dataclass instance, or ``None`` if the listing
         is filtered out by the date window.
     """
+    updated_raw = raw.get("updated")
+    date_posted = _parse_jooble_updated(updated_raw)
+
     # ------------------------------------------------------------------
     # Date filter: drop stale Jooble listings when max_days_old is set
     # ------------------------------------------------------------------
-    if max_days_old is not None:
-        updated_raw = raw.get("updated")
-        if updated_raw is not None:
-            try:
-                # Jooble returns timestamps like "2024-01-15T10:00:00.0000000"
-                # Strip sub-second precision beyond 6 digits for fromisoformat.
-                updated_str = str(updated_raw)
-                # Remove trailing fractional seconds beyond microseconds
-                if "." in updated_str:
-                    base, frac = updated_str.split(".", 1)
-                    frac = frac[:6]
-                    updated_str = f"{base}.{frac}"
-                updated_dt = datetime.fromisoformat(updated_str)
-                if updated_dt.tzinfo is None:
-                    updated_dt = updated_dt.replace(tzinfo=UTC)
-                age_days = (datetime.now(UTC) - updated_dt).days
-                if age_days > max_days_old:
-                    logger.debug(
-                        "Jooble listing %s skipped — %d days old (window: %d)",
-                        raw.get("id"),
-                        age_days,
-                        max_days_old,
-                    )
-                    return None
-            except (ValueError, TypeError):
-                logger.warning(
-                    "Jooble listing %s has unparseable 'updated' field: %r",
+    if max_days_old is not None and updated_raw is not None:
+        if date_posted is not None:
+            age_days = (datetime.now(UTC) - date_posted).days
+            if age_days > max_days_old:
+                logger.debug(
+                    "Jooble listing %s skipped — %d days old (window: %d)",
                     raw.get("id"),
-                    updated_raw,
+                    age_days,
+                    max_days_old,
                 )
+                return None
+        else:
+            logger.warning(
+                "Jooble listing %s has unparseable 'updated' field: %r",
+                raw.get("id"),
+                updated_raw,
+            )
 
     salary_raw = raw.get("salary")
     salary_min: int | None = None
@@ -130,4 +164,5 @@ def normalize_jooble(raw: dict[str, Any], max_days_old: int | None = None) -> Jo
         salary_max=None,
         description=raw.get("snippet"),
         url=raw.get("link"),
+        date_posted=date_posted,
     )

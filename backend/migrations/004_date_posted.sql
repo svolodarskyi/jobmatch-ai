@@ -1,0 +1,12 @@
+-- backend/migrations/004_date_posted.sql
+-- Adds a `date_posted` timestamptz column to the `job` table so JobCard can
+-- display each job's actual posting date (parsed from Adzuna's `created`
+-- field and Jooble's `updated` field), instead of only the pipeline's
+-- `date_fetched` timestamp.
+--
+-- Idempotent: ADD COLUMN IF NOT EXISTS is safe to re-run — running this file
+-- twice against the same database produces no error. No DEFAULT and no
+-- backfill statement: existing rows, and any row whose source omitted the
+-- field, simply read date_posted = NULL and the frontend falls back to
+-- date_fetched for display.
+ALTER TABLE job ADD COLUMN IF NOT EXISTS date_posted timestamptz;

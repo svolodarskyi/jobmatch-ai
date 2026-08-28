@@ -45,6 +45,7 @@ class JobOut(BaseModel):
     salary_max: int | None
     url: str | None
     date_fetched: datetime | None
+    date_posted: datetime | None
     raw_score: float | None
     llm_score: float | None
     llm_rationale: str | None

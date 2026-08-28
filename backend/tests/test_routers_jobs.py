@@ -335,6 +335,7 @@ def _job_row(
     salary_max: int = 120_000,
     url: str = "https://example.com/1",
     date_fetched: str = "2026-08-26T14:00:00+00:00",
+    date_posted: str | None = "2026-08-20T10:00:00+00:00",
     raw_score: float | None = 72.0,
     llm_score: float | None = None,
     llm_rationale: str | None = None,
@@ -350,6 +351,7 @@ def _job_row(
         "salary_max": salary_max,
         "url": url,
         "date_fetched": date_fetched,
+        "date_posted": date_posted,
         "raw_score": raw_score,
         "llm_score": llm_score,
         "llm_rationale": llm_rationale,
@@ -453,6 +455,35 @@ def test_get_jobs_correct_field_shape():
     assert j["notes"] == "follow up"
     assert j["fits_me"] is False
     assert j["status_history"] == []
+
+
+def test_get_jobs_includes_date_posted():
+    """GET /jobs includes date_posted in the JobOut for every row."""
+    job = _job_row(date_posted="2026-08-20T10:00:00+00:00")
+    mock_db = _make_jobs_mock_db([job])
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    client = TestClient(app)
+    response = client.get("/jobs/")
+
+    j = response.json()["jobs"][0]
+    assert j["date_posted"] == "2026-08-20T10:00:00Z"
+
+
+def test_get_jobs_date_posted_null_when_missing():
+    """A job row whose date_posted is NULL (existing row, or source that
+    omitted the field) serializes date_posted as JSON null, not an error."""
+    job = _job_row(date_posted=None)
+    mock_db = _make_jobs_mock_db([job])
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    client = TestClient(app)
+    response = client.get("/jobs/")
+
+    j = response.json()["jobs"][0]
+    assert j["date_posted"] is None
+    # date_fetched remains present and non-null — it's the fallback source.
+    assert j["date_fetched"] is not None
 
 
 def test_get_jobs_ordered_by_raw_score_desc():

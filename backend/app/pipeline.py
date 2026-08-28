@@ -39,6 +39,9 @@ def persist_jobs(jobs: list[Job], db: Client) -> _PersistResult:
     function uses ``upsert`` so Postgres resolves the conflict automatically.
 
     ``date_fetched`` is stamped to the current UTC time on every call.
+    ``date_posted`` is threaded through from each normalized ``Job`` (as an
+    ISO string, or ``None`` when the source omitted it), so re-fetching an
+    existing job refreshes it like every other normalized field.
     ``raw_score``, ``llm_score``, and ``llm_rationale`` are **not** set here;
     they remain NULL until the scoring passes run.
 
@@ -83,6 +86,7 @@ def persist_jobs(jobs: list[Job], db: Client) -> _PersistResult:
 
         row = asdict(job)
         row["date_fetched"] = now
+        row["date_posted"] = job.date_posted.isoformat() if job.date_posted is not None else None
         # Scoring fields are intentionally omitted — left NULL by the DB default.
         db.table("job").upsert(row, on_conflict="source,external_id").execute()
 

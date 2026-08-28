@@ -5,6 +5,7 @@ database connections. Async tests use asyncio.run() directly.
 """
 
 import asyncio
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -18,7 +19,11 @@ from app.sources.normalize import Job
 # ---------------------------------------------------------------------------
 
 
-def _make_job(source: str = "adzuna", external_id: str = "abc123") -> Job:
+def _make_job(
+    source: str = "adzuna",
+    external_id: str = "abc123",
+    date_posted: datetime | None = None,
+) -> Job:
     return Job(
         source=source,
         external_id=external_id,
@@ -29,6 +34,7 @@ def _make_job(source: str = "adzuna", external_id: str = "abc123") -> Job:
         salary_max=120000,
         description="Build great things.",
         url="https://example.com/jobs/abc123",
+        date_posted=date_posted,
     )
 
 
@@ -243,6 +249,41 @@ def test_persist_jobs_sets_date_fetched_and_omits_score_fields() -> None:
     assert "raw_score" not in row_arg
     assert "llm_score" not in row_arg
     assert "llm_rationale" not in row_arg
+
+
+# ---------------------------------------------------------------------------
+# date_posted is threaded through the upsert as an ISO string, or None when
+# the normalized Job has no posting date (issue #52)
+# ---------------------------------------------------------------------------
+
+
+def test_persist_jobs_threads_date_posted_as_iso_string() -> None:
+    """A Job with a date_posted datetime is upserted with date_posted as an
+    ISO string, the same way date_fetched is converted."""
+    mock_db = _make_mock_db()
+    posted = datetime(2026, 8, 20, 10, 0, 0, tzinfo=UTC)
+    job = _make_job(date_posted=posted)
+
+    persist_jobs([job], mock_db)
+
+    chain = mock_db.table.return_value
+    row_arg = chain.upsert.call_args.args[0]
+
+    assert row_arg["date_posted"] == posted.isoformat()
+
+
+def test_persist_jobs_date_posted_none_stays_none() -> None:
+    """A Job with date_posted=None (source omitted the field) upserts
+    date_posted as None rather than a stringified 'None'."""
+    mock_db = _make_mock_db()
+    job = _make_job(date_posted=None)
+
+    persist_jobs([job], mock_db)
+
+    chain = mock_db.table.return_value
+    row_arg = chain.upsert.call_args.args[0]
+
+    assert row_arg["date_posted"] is None
 
 
 # ---------------------------------------------------------------------------

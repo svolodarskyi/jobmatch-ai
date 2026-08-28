@@ -14,6 +14,7 @@ export interface Job {
   salary_max: number | null
   url: string
   date_fetched: string
+  date_posted: string | null
   raw_score: number | null
   llm_score: number | null
   llm_rationale: string | null
@@ -232,7 +233,7 @@ export default function JobCard({
           {job.company}
           {job.location ? ` · ${job.location}` : ''}
           {salary ? ` · ${salary}` : ''}
-          {` · ${formatDate(job.date_fetched)}`}
+          {` · ${formatDate(job.date_posted ?? job.date_fetched)}`}
         </p>
 
         {/* LLM rationale */}

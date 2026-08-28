@@ -156,6 +156,7 @@ def list_jobs(
             salary_max=j.get("salary_max"),
             url=j.get("url"),
             date_fetched=j.get("date_fetched"),
+            date_posted=j.get("date_posted"),
             raw_score=j.get("raw_score"),
             llm_score=j.get("llm_score"),
             llm_rationale=j.get("llm_rationale"),

@@ -14,6 +14,7 @@ const baseJob: Job = {
   salary_max: 140000,
   url: 'https://example.com/job/1',
   date_fetched: '2026-08-26T14:00:00Z',
+  date_posted: '2026-08-20T10:00:00Z',
   raw_score: 84,
   llm_score: 78,
   llm_rationale: 'Strong Azure match. Worth applying.',
@@ -50,6 +51,23 @@ describe('JobCard', () => {
     const link = screen.getByRole('link', { name: /view listing/i })
     expect(link).toHaveAttribute('href', 'https://example.com/job/1')
     expect(link).toHaveAttribute('target', '_blank')
+  })
+
+  it('displays date_posted (not date_fetched) when date_posted is present', () => {
+    render(<JobCard job={baseJob} />)
+    // date_posted = Aug 20, 2026 (distinct from date_fetched = Aug 26, 2026)
+    expect(screen.getByText(/Aug 20, 2026/)).toBeInTheDocument()
+    expect(screen.queryByText(/Aug 26, 2026/)).not.toBeInTheDocument()
+  })
+
+  it('falls back to date_fetched, unlabeled, when date_posted is null', () => {
+    const job = { ...baseJob, date_posted: null }
+    render(<JobCard job={job} />)
+    // Falls back to date_fetched = Aug 26, 2026, in the exact same format —
+    // no "estimated"/"fetched" label distinguishing it from a real post date.
+    expect(screen.getByText(/Aug 26, 2026/)).toBeInTheDocument()
+    expect(screen.queryByText(/estimated/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/fetched/i)).not.toBeInTheDocument()
   })
 
   it('omits salary when both salary_min and salary_max are null', () => {
