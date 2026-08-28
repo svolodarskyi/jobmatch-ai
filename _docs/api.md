@@ -90,7 +90,10 @@ Returns jobs ordered by score (descending). All query params are optional.
       "llm_score": 78,
       "llm_rationale": "Strong skills match on Azure and Databricks. They want 5+ yrs leadership; your profile shows 2 — worth addressing in a cover letter.",
       "status": "New",
-      "notes": ""
+      "notes": "",
+      "status_history": [
+        { "status": "New", "changed_at": "2026-08-24T09:00:00Z" }
+      ]
     }
   ]
 }
@@ -98,6 +101,8 @@ Returns jobs ordered by score (descending). All query params are optional.
 
 `llm_score` and `llm_rationale` are `null` for jobs not yet re-ranked by Pass 2.
 `salary_min` / `salary_max` are `null` when the listing did not include salary.
+`status_history` is `[]` for a job with no application-status row yet; otherwise it mirrors the
+`history` array returned by `PATCH /jobs/{id}/status`, oldest entry first.
 
 ### `POST /fetch`
 

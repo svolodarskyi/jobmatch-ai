@@ -23,6 +23,13 @@ class ProfileInDB(Profile):
     id: str
 
 
+class StatusHistoryEntry(BaseModel):
+    """A single entry in the application status history."""
+
+    status: str
+    changed_at: str
+
+
 class JobOut(BaseModel):
     """A single job row merged with its application_status (if any)."""
 
@@ -41,6 +48,7 @@ class JobOut(BaseModel):
     status: str
     notes: str
     fits_me: bool
+    status_history: list[StatusHistoryEntry]
 
 
 class JobsResponse(BaseModel):
@@ -53,13 +61,6 @@ class JobsResponse(BaseModel):
 # ---------------------------------------------------------------------------
 # Status endpoint models
 # ---------------------------------------------------------------------------
-
-
-class StatusHistoryEntry(BaseModel):
-    """A single entry in the application status history."""
-
-    status: str
-    changed_at: str
 
 
 class StatusUpdateRequest(BaseModel):

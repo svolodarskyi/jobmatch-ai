@@ -9,7 +9,7 @@ from supabase import Client
 
 from app import pipeline
 from app.db import get_client, get_db
-from app.models import JobOut, JobsResponse, Profile
+from app.models import JobOut, JobsResponse, Profile, StatusHistoryEntry
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +114,9 @@ def list_jobs(
         job_notes = app_row["notes"] if app_row else _DEFAULT_NOTES
         job["status"] = job_status
         job["notes"] = job_notes
+        # Defensive default mirrors status.py's `if existing and existing.get("history")`
+        # handling — a missing row, or a row whose history is null/missing, yields [].
+        job["status_history"] = (app_row.get("history") if app_row else None) or []
 
         # Apply Python-level status filter
         if status is not None:
@@ -159,6 +162,10 @@ def list_jobs(
             status=j["status"],
             notes=j["notes"],
             fits_me=j.get("fits_me", False),
+            status_history=[
+                StatusHistoryEntry(status=entry["status"], changed_at=entry["changed_at"])
+                for entry in j["status_history"]
+            ],
         )
         for j in page
     ]

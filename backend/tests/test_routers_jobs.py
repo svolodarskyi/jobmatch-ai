@@ -363,13 +363,14 @@ def _status_row(
     job_id: str,
     status: str = "New",
     notes: str = "",
+    history: list[dict] | None = None,
 ) -> dict:
     return {
         "id": f"ssss-{job_id}",
         "job_id": job_id,
         "status": status,
         "notes": notes,
-        "history": [],
+        "history": history if history is not None else [],
         "updated_at": "2026-08-26T14:00:00+00:00",
     }
 
@@ -451,6 +452,7 @@ def test_get_jobs_correct_field_shape():
     assert j["status"] == "Saved"
     assert j["notes"] == "follow up"
     assert j["fits_me"] is False
+    assert j["status_history"] == []
 
 
 def test_get_jobs_ordered_by_raw_score_desc():
@@ -902,3 +904,60 @@ def test_get_jobs_sort_treats_null_score_as_zero_and_does_not_crash():
     assert response.status_code == 200
     ids = [j["id"] for j in response.json()["jobs"]]
     assert ids == [job_high["id"], job_low["id"], job_unscored["id"]]
+
+
+# ---------------------------------------------------------------------------
+# GET /jobs — status_history (issue #40)
+# ---------------------------------------------------------------------------
+
+
+def test_get_jobs_status_history_empty_when_no_app_status_row():
+    """A job with no application_status row at all gets status_history=[]."""
+    job = _job_row()
+    mock_db = _make_jobs_mock_db([job], status_rows=[])
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    client = TestClient(app)
+    response = client.get("/jobs/")
+
+    assert response.status_code == 200
+    j = response.json()["jobs"][0]
+    assert j["status_history"] == []
+
+
+def test_get_jobs_status_history_empty_when_history_is_null():
+    """A job with an application_status row whose history is null/missing
+    gets status_history=[] rather than null or a 500."""
+    job = _job_row()
+    status_row = _status_row(job["id"], status="Saved")
+    status_row["history"] = None  # simulate a null/missing history column
+    mock_db = _make_jobs_mock_db([job], [status_row])
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    client = TestClient(app)
+    response = client.get("/jobs/")
+
+    assert response.status_code == 200
+    j = response.json()["jobs"][0]
+    assert j["status_history"] == []
+
+
+def test_get_jobs_status_history_matches_verbatim_in_order():
+    """A job with multiple tracked status changes returns status_history
+    matching application_status.history verbatim, oldest entry first."""
+    job = _job_row()
+    history = [
+        {"status": "New", "changed_at": "2026-08-24T09:00:00+00:00"},
+        {"status": "Saved", "changed_at": "2026-08-25T11:30:00+00:00"},
+        {"status": "Applied", "changed_at": "2026-08-26T14:22:00+00:00"},
+    ]
+    status_row = _status_row(job["id"], status="Applied", history=history)
+    mock_db = _make_jobs_mock_db([job], [status_row])
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    client = TestClient(app)
+    response = client.get("/jobs/")
+
+    assert response.status_code == 200
+    j = response.json()["jobs"][0]
+    assert j["status_history"] == history
