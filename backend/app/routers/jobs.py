@@ -42,7 +42,12 @@ def list_jobs(
     """Return a paginated, filtered, scored-descending list of jobs.
 
     Filters applied server-side (DB level):
-    - ``min_score``: only jobs with raw_score >= min_score
+    - ``min_score``: only jobs with raw_score >= min_score. ``min_score=0``
+      (the default, and indistinguishable from an omitted param) applies no
+      raw_score filter at all, so unscored jobs (``raw_score IS NULL``) are
+      included alongside scored ones. Any ``min_score > 0`` applies a plain
+      ``.gte`` filter, which — per Postgres NULL comparison semantics —
+      naturally excludes ``raw_score IS NULL`` rows.
     - ``source``: only jobs from the given source
     - ``since``: only jobs fetched on or after the given date
     - ``fits_me``: only jobs with the given fits_me flag; omitted means no
@@ -60,7 +65,16 @@ def list_jobs(
     # ------------------------------------------------------------------
     # 1. Fetch jobs from DB with DB-level filters
     # ------------------------------------------------------------------
-    query = db.table(_JOB_TABLE).select("*").gte("raw_score", min_score)
+    query = db.table(_JOB_TABLE).select("*")
+
+    if min_score > 0:
+        # Explicit non-zero threshold: only jobs that demonstrated a score
+        # of at least min_score. NULL raw_score rows are excluded because
+        # `NULL >= N` is never true in Postgres.
+        query = query.gte("raw_score", min_score)
+    # else: min_score is 0 (explicit or omitted — indistinguishable per
+    # FastAPI's Query(default=0, ...)). Apply no raw_score filter, so both
+    # scored and unscored (raw_score IS NULL) rows come back.
 
     if source is not None:
         query = query.eq("source", source)

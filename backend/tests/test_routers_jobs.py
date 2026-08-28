@@ -335,7 +335,7 @@ def _job_row(
     salary_max: int = 120_000,
     url: str = "https://example.com/1",
     date_fetched: str = "2026-08-26T14:00:00+00:00",
-    raw_score: float = 72.0,
+    raw_score: float | None = 72.0,
     llm_score: float | None = None,
     llm_rationale: str | None = None,
     fits_me: bool = False,
@@ -783,3 +783,122 @@ def test_get_jobs_fits_me_defaults_false_when_missing_from_row():
     assert response.status_code == 200
     j = response.json()["jobs"][0]
     assert j["fits_me"] is False
+
+
+# ---------------------------------------------------------------------------
+# GET /jobs — raw_score IS NULL handling (issue #39)
+# ---------------------------------------------------------------------------
+
+
+def test_get_jobs_no_params_includes_unscored_rows():
+    """GET /jobs with no query params includes raw_score IS NULL rows,
+    and total reflects them too."""
+    job_scored = _job_row(id="aaaa0000-0000-0000-0000-000000000001", raw_score=72.0)
+    job_unscored = _job_row(id="bbbb0000-0000-0000-0000-000000000002", raw_score=None)
+
+    mock_db = _make_jobs_mock_db([job_scored, job_unscored])
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    client = TestClient(app)
+    response = client.get("/jobs/")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 2
+    returned_ids = {j["id"] for j in data["jobs"]}
+    assert returned_ids == {job_scored["id"], job_unscored["id"]}
+    # The null-score row must serialize as JSON null, no validation error.
+    unscored_out = next(j for j in data["jobs"] if j["id"] == job_unscored["id"])
+    assert unscored_out["raw_score"] is None
+
+    # No raw_score filter should have been applied at the DB level.
+    job_chain = mock_db.table("job")
+    job_chain.gte.assert_not_called()
+
+
+def test_get_jobs_explicit_min_score_zero_matches_omitted():
+    """min_score=0 (explicit) produces the same result set as omitting the
+    param entirely, for the same underlying data."""
+    job_scored = _job_row(id="aaaa0000-0000-0000-0000-000000000001", raw_score=72.0)
+    job_unscored = _job_row(id="bbbb0000-0000-0000-0000-000000000002", raw_score=None)
+
+    mock_db_default = _make_jobs_mock_db([job_scored, job_unscored])
+    app.dependency_overrides[get_db] = lambda: mock_db_default
+    client = TestClient(app)
+    default_response = client.get("/jobs/")
+
+    mock_db_explicit = _make_jobs_mock_db([job_scored, job_unscored])
+    app.dependency_overrides[get_db] = lambda: mock_db_explicit
+    explicit_response = client.get("/jobs/?min_score=0")
+
+    assert default_response.status_code == explicit_response.status_code == 200
+    default_data = default_response.json()
+    explicit_data = explicit_response.json()
+    assert default_data["total"] == explicit_data["total"] == 2
+    assert {j["id"] for j in default_data["jobs"]} == {j["id"] for j in explicit_data["jobs"]}
+
+    # Neither path should apply a raw_score gte filter.
+    mock_db_explicit.table("job").gte.assert_not_called()
+
+
+def test_get_jobs_filter_min_score_positive_excludes_unscored_row():
+    """min_score=<N> for N > 0 excludes raw_score IS NULL rows, even when
+    such a row is present in the underlying (mocked) data."""
+    job_high = _job_row(id="bbbb0000-0000-0000-0000-000000000002", raw_score=80.0)
+    # A real Postgrest `.gte("raw_score", 50)` filter would never return this
+    # row in the first place (NULL >= 50 is never true); the mock DB used
+    # here returns exactly what the DB-level filter would have produced.
+    mock_db = _make_jobs_mock_db([job_high])
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    client = TestClient(app)
+    response = client.get("/jobs/?min_score=50")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 1
+    assert data["jobs"][0]["id"] == job_high["id"]
+    job_chain = mock_db.table("job")
+    job_chain.gte.assert_called_once_with("raw_score", 50)
+
+
+def test_get_jobs_unscored_row_matches_other_filters_when_min_score_zero():
+    """Combining min_score=0 (or omitted) with other filters still returns
+    raw_score IS NULL rows that match those other filters."""
+    job_unscored_match = _job_row(
+        id="aaaa0000-0000-0000-0000-000000000001", source="adzuna", raw_score=None
+    )
+    # DB-level source filter already applied — mock only returns matching rows.
+    mock_db = _make_jobs_mock_db([job_unscored_match])
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    client = TestClient(app)
+    response = client.get("/jobs/?source=adzuna")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 1
+    assert data["jobs"][0]["raw_score"] is None
+    assert data["jobs"][0]["source"] == "adzuna"
+
+    job_chain = mock_db.table("job")
+    job_chain.gte.assert_not_called()
+    job_chain.eq.assert_called_once_with("source", "adzuna")
+
+
+def test_get_jobs_sort_treats_null_score_as_zero_and_does_not_crash():
+    """Unscored jobs (raw_score None) sort below all positively-scored jobs
+    and the sort does not raise when None and numeric scores are mixed."""
+    job_high = _job_row(id="aaaa0000-0000-0000-0000-000000000001", raw_score=90.0)
+    job_low = _job_row(id="bbbb0000-0000-0000-0000-000000000002", raw_score=10.0)
+    job_unscored = _job_row(id="cccc0000-0000-0000-0000-000000000003", raw_score=None)
+
+    mock_db = _make_jobs_mock_db([job_high, job_unscored, job_low])
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    client = TestClient(app)
+    response = client.get("/jobs/")
+
+    assert response.status_code == 200
+    ids = [j["id"] for j in response.json()["jobs"]]
+    assert ids == [job_high["id"], job_low["id"], job_unscored["id"]]
