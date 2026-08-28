@@ -93,6 +93,84 @@ describe('FetchRuns', () => {
     expect(screen.getByText('0 new / 0 updated')).toBeInTheDocument()
   })
 
+  it('shows retrieved count with red-400 styling when a source retrieved 0 (failed/empty fetch)', async () => {
+    mockRuns([
+      {
+        ...mockRun,
+        id: '10',
+        source_stats: {
+          adzuna: { retrieved: 0, new: 0, updated: 0 },
+          jooble: { new: 8, updated: 4 },
+        },
+      },
+    ])
+    render(<FetchRuns />)
+    await screen.findByRole('table')
+
+    const cell = screen.getByText('0 retrieved · 0 new / 0 updated')
+    expect(cell).toBeInTheDocument()
+    expect(cell).toHaveClass('text-red-400')
+  })
+
+  it('shows retrieved count with slate-400 styling when a source retrieved jobs but all were duplicates', async () => {
+    mockRuns([
+      {
+        ...mockRun,
+        id: '11',
+        source_stats: {
+          adzuna: { retrieved: 12, new: 0, updated: 0 },
+          jooble: { new: 8, updated: 4 },
+        },
+      },
+    ])
+    render(<FetchRuns />)
+    await screen.findByRole('table')
+
+    const cell = screen.getByText('12 retrieved · 0 new / 0 updated')
+    expect(cell).toBeInTheDocument()
+    expect(cell).toHaveClass('text-slate-400')
+  })
+
+  it('shows retrieved count with default styling when a source has real new/updated activity', async () => {
+    mockRuns([
+      {
+        ...mockRun,
+        id: '12',
+        source_stats: {
+          adzuna: { retrieved: 20, new: 15, updated: 8 },
+          jooble: { new: 8, updated: 4 },
+        },
+      },
+    ])
+    render(<FetchRuns />)
+    await screen.findByRole('table')
+
+    const cell = screen.getByText('20 retrieved · 15 new / 8 updated')
+    expect(cell).toBeInTheDocument()
+    expect(cell).not.toHaveClass('text-red-400')
+    expect(cell).not.toHaveClass('text-slate-400')
+  })
+
+  it('falls back to legacy "new / updated" text with default styling for an old-shape source missing the retrieved key', async () => {
+    mockRuns([
+      {
+        ...mockRun,
+        id: '13',
+        source_stats: {
+          adzuna: { new: 3, updated: 1 },
+          jooble: { new: 8, updated: 4 },
+        },
+      },
+    ])
+    render(<FetchRuns />)
+    await screen.findByRole('table')
+
+    const cell = screen.getByText('3 new / 1 updated')
+    expect(cell).toBeInTheDocument()
+    expect(cell).not.toHaveClass('text-red-400')
+    expect(cell).not.toHaveClass('text-slate-400')
+  })
+
   it('renders rows in API order without client-side re-sorting', async () => {
     const second = { ...mockRun, id: '3', started_at: '2026-08-26T09:00:00Z' }
     mockRuns([mockRun, second])

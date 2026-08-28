@@ -5,6 +5,7 @@ const POLL_INTERVAL_MS = 3000
 const POLL_TIMEOUT_MS = 5 * 60 * 1000
 
 interface SourceStat {
+  retrieved?: number
   new?: number
   updated?: number
 }
@@ -80,7 +81,19 @@ function formatCost(usd: number | null | undefined): string {
 function formatSourceStat(stat: SourceStat | undefined): string {
   const n = stat?.new ?? 0
   const u = stat?.updated ?? 0
+  if (typeof stat?.retrieved === 'number') {
+    return `${stat.retrieved} retrieved · ${n} new / ${u} updated`
+  }
   return `${n} new / ${u} updated`
+}
+
+function sourceStatClass(stat: SourceStat | undefined): string {
+  if (typeof stat?.retrieved !== 'number') return ''
+  if (stat.retrieved === 0) return 'text-red-400'
+  const n = stat.new ?? 0
+  const u = stat.updated ?? 0
+  if (n === 0 && u === 0) return 'text-slate-400'
+  return ''
 }
 
 function hasRunningRow(runs: FetchRun[]): boolean {
@@ -212,10 +225,14 @@ export default function FetchRuns({ pollInterval = POLL_INTERVAL_MS }: FetchRuns
                           <td className="text-right py-2 pr-3 font-mono">
                             {formatNum(run.fetched_total)}
                           </td>
-                          <td className="text-right py-2 pr-3 font-mono">
+                          <td
+                            className={`text-right py-2 pr-3 font-mono ${sourceStatClass(run.source_stats?.adzuna)}`}
+                          >
                             {formatSourceStat(run.source_stats?.adzuna)}
                           </td>
-                          <td className="text-right py-2 pr-3 font-mono">
+                          <td
+                            className={`text-right py-2 pr-3 font-mono ${sourceStatClass(run.source_stats?.jooble)}`}
+                          >
                             {formatSourceStat(run.source_stats?.jooble)}
                           </td>
                           <td className="text-right py-2 pr-3 font-mono">
