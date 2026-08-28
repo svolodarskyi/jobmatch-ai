@@ -128,6 +128,81 @@ Poll `GET /fetch-runs?limit=1` to track progress of the run (fetched/new/updated
 { "detail": "Profile not found — save a profile before fetching" }
 ```
 
+### `GET /fetch-runs`
+
+Returns fetch-pipeline run history, most recent first.
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `limit` | int (1–100) | `30` | Max runs to return |
+
+Results are ordered by `started_at` descending.
+
+**Response 200**
+
+```json
+{
+  "runs": [
+    {
+      "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "started_at": "2026-08-27T09:00:00Z",
+      "completed_at": "2026-08-27T09:02:14Z",
+      "window_days": 7,
+      "fetched_total": 213,
+      "new_jobs": 18,
+      "updated_jobs": 4,
+      "scored_pass1": 213,
+      "scored_pass2": 18,
+      "source_stats": {
+        "adzuna": { "retrieved": 140, "new": 11, "updated": 2 },
+        "jooble": { "retrieved": 73, "new": 7, "updated": 2 }
+      },
+      "tokens_in": 9820,
+      "tokens_out": 3110,
+      "cost_usd": 0.14,
+      "status": "ok",
+      "error_message": null
+    }
+  ]
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | string | Fetch run row id |
+| `started_at` | ISO 8601 string \| `null` | When the run began |
+| `completed_at` | ISO 8601 string \| `null` | When the run finished; `null` while still in progress (see caveat below) |
+| `window_days` | int \| `null` | Lookback window used for the run |
+| `fetched_total` | int \| `null` | Total listings fetched across all sources |
+| `new_jobs` | int \| `null` | Listings newly inserted |
+| `updated_jobs` | int \| `null` | Listings that updated an existing row |
+| `scored_pass1` | int \| `null` | Jobs scored by the Pass 1 pure-function scorer |
+| `scored_pass2` | int \| `null` | Jobs re-ranked by the Pass 2 OpenAI step |
+| `source_stats` | object | Per-source stats, keyed by source name (`"adzuna"`, `"jooble"`) — see below |
+| `tokens_in` | int \| `null` | Pass 2 prompt tokens consumed |
+| `tokens_out` | int \| `null` | Pass 2 completion tokens consumed |
+| `cost_usd` | float \| `null` | Estimated Pass 2 OpenAI cost for the run |
+| `status` | string | One of `"ok"`, `"partial"`, `"error"` — see below |
+| `error_message` | string \| `null` | See below |
+
+**`source_stats` shape** — each value is `{"retrieved": int, "new": int, "updated": int}`:
+
+- `retrieved` — raw listing count returned by that source before normalization/dedup.
+- `new` — listings from that source newly inserted.
+- `updated` — listings from that source that updated an existing row.
+
+Every source that was queried (i.e. `profile.target_titles` is non-empty) gets an entry, even if it retrieved 0 listings or its fetch raised an exception — in both cases the entry is `{"retrieved": 0, "new": 0, "updated": 0}`. `source_stats` is `{}` only when no fetch was attempted at all (empty `target_titles`).
+
+**`status` values:**
+
+- `"ok"` — the run completed cleanly.
+- `"partial"` — a source fetch failed or a Pass 2 rerank failed, but the pipeline otherwise completed (non-fatal).
+- `"error"` — an unhandled exception escaped the pipeline.
+
+**`error_message`:** `null` when `status` is `"ok"`; a `"; "`-joined summary of per-source failure messages when `status` is `"partial"`; `str(exception)` when `status` is `"error"`.
+
+**In-progress caveat:** a `fetch_run` row is inserted with `status: "ok"` and `completed_at: null` before the run finishes, and only updated to its final `status`/`completed_at` once the pipeline completes. This means `"ok"` with `completed_at: null` currently means the run is **still running**, not that it succeeded — it is indistinguishable from a genuinely completed `"ok"` run except by the `null` `completed_at`. This ambiguity is tracked for a fix in #50; the behavior described here is current, pre-#50 behavior.
+
 ---
 
 ## Application Status
